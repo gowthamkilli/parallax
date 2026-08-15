@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# generated artefacts -- reproducible via sim/train_classifier.py and sim/run_demo.py
+out/*.pkl
+out/*.png
+out/*.json
+
+.venv/
+venv/
+env/
+.DS_Store
+Thumbs.db
