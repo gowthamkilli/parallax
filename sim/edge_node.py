@@ -40,7 +40,6 @@ from parallax.contact import (
     FLAG_ELEVATION_VALID,
     FLAG_GPS_LOCKED,
     FLAG_MULTIPATH_SUSPECT,
-    FLAG_RANGE_IS_MEASURED,
 )
 from parallax.doa import estimate_doa
 from parallax.features import bandpass, detect_onset
@@ -107,7 +106,15 @@ class EdgeNode:
         if onset is None:
             return None
 
-        doa, window = self.bearing(audio, fs, onset)
+        try:
+            doa, window = self.bearing(audio, fs, onset)
+        except (ValueError, np.linalg.LinAlgError):
+            # A degenerate DoA solve (near-zero solution norm, typically at
+            # very low SNR) is a "no usable bearing" outcome, exactly like
+            # a missed detector trigger -- not a crash. The energy detector
+            # can fire on a transient too weak for GCC-PHAT to resolve a
+            # coherent wavefront from; the node should stay silent, not die.
+            return None
         threat, confidence = self.classify(window, fs)
 
         inflation = self.profile.bearing_sigma_inflation if self.profile else 1.0

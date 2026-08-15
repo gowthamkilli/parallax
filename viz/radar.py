@@ -99,8 +99,14 @@ def _readout(ax, track, payload):
 
     colour = CLASS_COLOUR.get(track["threat_class"], FG)
     range_text = f"{track['range_m']:.0f} m" if track["range_m"] is not None else "-- NO FIX --"
+    # Scoped to THIS track's own contributing nodes -- a payload can hold
+    # several tracks (e.g. one real fix plus a multipath-degraded bearing-only
+    # track from a different node), and pulling from all reports in the
+    # payload could show one track's azimuth/range next to another track's
+    # elevation.
+    track_node_ids = set(track.get("contributing_nodes", []))
     elev = next((r["elevation_deg"] for r in payload["reports"]
-                 if r.get("flags", 0) & 0x02), None)
+                 if r.get("node_id") in track_node_ids and r.get("flags", 0) & 0x02), None)
     elev_text = f"{elev:+.1f}°" if elev is not None else "n/a"
 
     fields = [
@@ -135,7 +141,7 @@ def _dial(ax, tracks, nodes):
 
     max_range = 500.0
     for track in tracks:
-        if track["range_m"]:
+        if track["range_m"] is not None:
             max_range = max(max_range, track["range_m"] * 1.3)
     rings = np.linspace(max_range / 4, max_range, 4)
 
@@ -152,7 +158,8 @@ def _dial(ax, tracks, nodes):
         colour = CLASS_COLOUR.get(track["threat_class"], FG)
         theta = math.radians(track["bearing_deg"])
         sigma = track["bearing_sigma_deg"] or 1.0
-        r = track["range_m"] or max_range
+        has_range = track["range_m"] is not None
+        r = track["range_m"] if has_range else max_range
 
         # 1-sigma bearing wedge: the honest depiction of angular uncertainty.
         # Built directly in the axes' own (theta, r) data coordinates via
@@ -169,9 +176,9 @@ def _dial(ax, tracks, nodes):
             color=colour, alpha=0.16, edgecolor="none",
         )
         ax.plot([theta, theta], [0, r], color=colour, linewidth=2.0,
-                alpha=0.95 if track["range_m"] else 0.5,
-                linestyle="-" if track["range_m"] else "--")
-        if track["range_m"]:
+                alpha=0.95 if has_range else 0.5,
+                linestyle="-" if has_range else "--")
+        if has_range:
             ax.plot([theta], [track["range_m"]], "o", color=colour, markersize=9,
                     markeredgecolor="white", markeredgewidth=0.8)
             ax.annotate(f" {track['threat_class'][:4]}", (theta, track["range_m"]),
@@ -206,7 +213,7 @@ def _plan(ax, tracks, nodes, truth):
 
     for track in tracks:
         colour = CLASS_COLOUR.get(track["threat_class"], FG)
-        ray_length = (track["range_m"] or 600.0) * 1.15
+        ray_length = (track["range_m"] if track["range_m"] is not None else 600.0) * 1.15
 
         # One ray per contributing node, drawn from that node's own bearing.
         for report in track.get("_reports", []) or []:
@@ -285,7 +292,7 @@ def _table(ax, reports, tracks):
             f"{report['azimuth_deg']:.2f}°",
             f"{report['azimuth_sigma_deg']:.2f}°",
             f"{report['elevation_deg']:+.1f}°" if report["flags"] & 0x02 else "n/a",
-            f"{report['range_m']:.0f} m" if report["range_m"] else "—",
+            f"{report['range_m']:.0f} m" if report["range_m"] else "—",  # per-report range is always 0 today (contact reports never carry it)
             f"{report['class_confidence']:.2f}",
             f"{(report['t_event_ns'] - t0) / 1e6:.1f}",
         ]

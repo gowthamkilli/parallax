@@ -125,14 +125,20 @@ def triangulate(
 def cep50_from_cov(cov: np.ndarray) -> float:
     """Circular error probable (50%) in metres from a 2x2 position covariance.
 
-    Uses the standard Rayleigh approximation CEP50 ~= 1.1774 * sqrt(lambda_min
-    * lambda_max) valid for moderately eccentric error ellipses. This is an
-    ESTIMATE; strongly elongated ellipses (near-parallel bearings) violate the
-    approximation and we report the ellipse axes instead.
+    Uses the standard Rayleigh approximation CEP50 ~= 1.1774 * sqrt(sigma_min
+    * sigma_max), where sigma_min/sigma_max are the 1-sigma semi-axis lengths
+    (standard deviations, in METRES) -- not the covariance eigenvalues
+    themselves, which are variances (in metres-squared). Taking the geometric
+    mean of the two variances rather than the two standard deviations is a
+    common transcription slip here: both are "sqrt of a product," but only
+    one of them comes out in metres. Valid for moderately eccentric error
+    ellipses; this is an ESTIMATE, and strongly elongated ellipses
+    (near-parallel bearings) violate the approximation, which is why we also
+    report the ellipse axes directly rather than relying on this alone.
     """
-    eigenvalues = np.linalg.eigvalsh(cov)
-    eigenvalues = np.clip(eigenvalues, 0.0, None)
-    return float(1.1774 * math.sqrt(math.sqrt(eigenvalues[0] * eigenvalues[1]) ** 2))
+    eigenvalues = np.clip(np.linalg.eigvalsh(cov), 0.0, None)
+    sigma_min, sigma_max = np.sqrt(eigenvalues)
+    return float(1.1774 * math.sqrt(sigma_min * sigma_max))
 
 
 def error_ellipse(cov: np.ndarray, n_sigma: float = 1.0) -> tuple[float, float, float]:

@@ -44,8 +44,11 @@ class ThreatClass(IntEnum):
     NUISANCE = 5  # firecracker, door slam, hammer, thunder
 
 
-# Bit flags.
-FLAG_RANGE_IS_MEASURED = 1 << 0  # range came from flash/acoustic dt, not a guess
+# Bit flags. Bit 0 is reserved (formerly FLAG_RANGE_IS_MEASURED): range is
+# never carried on an individual ContactReport in this design -- it only
+# emerges at the fusion/track level from flash/acoustic dt or triangulation
+# (see FusedTrack.range_method) -- so a per-report "is this range measured"
+# flag had nothing to describe and has been removed rather than left dead.
 FLAG_ELEVATION_VALID = 1 << 1  # array is non-planar, elevation is observable
 FLAG_GPS_LOCKED = 1 << 2  # PPS discipline is good, timestamp is sub-microsecond
 FLAG_SATURATED = 1 << 3  # ADC clipped; bearing is suspect
@@ -75,9 +78,6 @@ class ContactReport:
     node_alt_m: float = 0.0
     node_heading_deg: float = 0.0
     flags: int = 0
-
-    def has_range(self) -> bool:
-        return bool(self.flags & FLAG_RANGE_IS_MEASURED) and self.range_m > 0
 
     def to_bytes(self) -> bytes:
         """Serialise to the 42-byte wire record (with CRC-16/CCITT)."""

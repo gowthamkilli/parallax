@@ -45,10 +45,17 @@ from scipy import signal
 
 from parallax.classifier import TransientClassifier, save_metrics
 from parallax.contact import ThreatClass
-from parallax.features import extract
+from parallax.features import extract, detect_onset
+from sim.edge_node import PRE_TRIGGER_S, WINDOW_S
 
 FS = 48_000.0
-DURATION_S = 0.25
+# MUST match the window the live edge pipeline actually classifies
+# (sim/edge_node.py's PRE_TRIGGER_S + WINDOW_S). Several features are
+# duration-sensitive -- e.g. modulation_20_200hz needs a full cycle to
+# resolve, decay/duration features are scaled by the window length -- so
+# training on a longer window than inference sees is a real train/inference
+# skew, not a cosmetic mismatch.
+DURATION_S = PRE_TRIGGER_S + WINDOW_S
 
 
 def _noise_bed(n: int, rng: np.random.Generator, colour: float = 0.7) -> np.ndarray:
@@ -69,14 +76,51 @@ def _reverb(x: np.ndarray, rng: np.random.Generator, rt60_s: float) -> np.ndarra
 
 
 def gunshot(rng):
-    n = int(DURATION_S * FS)
-    t = np.arange(n) / FS
-    tau = rng.uniform(0.0007, 0.0018)  # calibre / charge dependent
-    x = (1 - t / tau) * np.exp(-t / tau)
-    sos = signal.butter(2, [rng.uniform(300, 600) / (FS / 2), rng.uniform(1800, 3200) / (FS / 2)],
-                        btype="band", output="sos")
-    x = x + 0.15 * signal.sosfilt(sos, rng.standard_normal(n)) * np.exp(-t / (4 * tau))
-    return _reverb(x, rng, rng.uniform(0.15, 0.9))
+    """Physically-simulated, NOT a separate parametric model.
+
+    Earlier versions of this file used a standalone Friedlander-pulse
+    generator with its own hand-tuned tau/reverb/ringing parameters --
+    independent of, and numerically different from, the physical scenario
+    renderer in sim/scenario.py that the end-to-end demo actually classifies
+    audio from (same Friedlander wave, but shaped by real spherical
+    spreading, atmospheric absorption, and array-onset windowing on top).
+    That mismatch is a genuine train/inference domain gap, not just a
+    labelling nuance: e.g. the two pipelines' `duration_ms` feature differed
+    by ~5x on matched examples, and it was enough to flip the trained
+    model's decision on real demo audio from GUNSHOT to NUISANCE.
+
+    So: generate the GUNSHOT class by running the SAME physical renderer and
+    the SAME single-channel windowing (PRE_TRIGGER_S before onset, WINDOW_S
+    long, unfiltered) that sim/edge_node.py's classify() actually feeds the
+    model in production, across randomised range/bearing/SNR/temperature.
+    This is still synthetic -- the underlying blast model is still a
+    Friedlander wave, not a recording -- but it is no longer trained on a
+    signal shape the inference path never produces.
+    """
+    from sim.scenario import Shot, SimNode, render_node_audio
+    from parallax.doa import ring_plus_mast
+
+    node = SimNode(node_id=1, enu=np.zeros(2), geometry=ring_plus_mast())
+    bearing = rng.uniform(0, 360)
+    rng_dist = rng.uniform(80, 500)
+    truth = rng_dist * np.array([math.sin(math.radians(bearing)), math.cos(math.radians(bearing))])
+    shot = Shot(enu=truth, source_spl_db=rng.uniform(145, 162))
+    temp_c = rng.uniform(5, 35)
+
+    audio, _, _ = render_node_audio(
+        node, shot, fs=FS, duration_s=1.0, snr_db=rng.uniform(15, 35),
+        temp_c=temp_c, rng=rng,
+    )
+    reference = audio[0]
+    onset = detect_onset(reference, FS, threshold_sigma=6.0)
+    if onset is None:
+        onset = len(reference) // 2
+
+    lo = max(0, onset - int(PRE_TRIGGER_S * FS))
+    hi = min(len(reference), lo + int(DURATION_S * FS))
+    window = np.zeros(int(DURATION_S * FS))
+    window[: hi - lo] = reference[lo:hi]
+    return window
 
 
 def firecracker(rng):
@@ -91,12 +135,12 @@ def firecracker(rng):
     x = np.zeros(n)
     for _ in range(rng.integers(1, 4)):
         tau = rng.uniform(0.00025, 0.0008)  # shorter than a muzzle blast
-        offset = int(rng.uniform(0, 0.08) * FS)
+        offset = int(rng.uniform(0, 0.35 * DURATION_S) * FS)
         pulse = (1 - t / tau) * np.exp(-t / tau) * rng.uniform(0.5, 1.0)
         x[offset:] += pulse[: n - offset]
     sos = signal.butter(2, 900 / (FS / 2), btype="high", output="sos")
     x = 0.65 * x + 0.35 * signal.sosfilt(sos, x)
-    return _reverb(x, rng, rng.uniform(0.1, 0.8))
+    return _reverb(x, rng, rng.uniform(0.005, 0.02))
 
 
 def door_slam(rng):
@@ -105,7 +149,7 @@ def door_slam(rng):
     tau = rng.uniform(0.004, 0.015)  # much slower decay, low frequency
     x = np.exp(-t / tau) * np.sin(2 * np.pi * rng.uniform(60, 200) * t)
     x += 0.3 * np.exp(-t / (tau / 3)) * rng.standard_normal(n)
-    return _reverb(x, rng, rng.uniform(0.2, 1.0))
+    return _reverb(x, rng, rng.uniform(0.01, 0.025))
 
 
 def vehicle(rng):
@@ -140,13 +184,13 @@ def personnel(rng):
     t = np.arange(n) / FS
     x = np.zeros(n)
     for _ in range(rng.integers(1, 3)):
-        offset = int(rng.uniform(0, 0.15) * FS)
-        tau = rng.uniform(0.01, 0.04)
+        offset = int(rng.uniform(0, 0.4 * DURATION_S) * FS)
+        tau = rng.uniform(0.003, 0.01)
         thud = np.exp(-t / tau) * (0.6 + 0.4 * rng.standard_normal(n))
         sos = signal.butter(2, 350 / (FS / 2), btype="low", output="sos")
         thud = signal.sosfilt(sos, thud) * rng.uniform(0.3, 1.0)
         x[offset:] += thud[: n - offset]
-    return _reverb(x, rng, rng.uniform(0.1, 0.5))
+    return _reverb(x, rng, rng.uniform(0.005, 0.02))
 
 
 GENERATORS = {

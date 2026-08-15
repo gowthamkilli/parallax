@@ -126,7 +126,6 @@ from .contact import (
     Modality,
     ThreatClass,
     FLAG_MULTIPATH_SUSPECT,
-    FLAG_RANGE_IS_MEASURED,
 )
 from .geometry import (
     LocalFrame,
@@ -213,7 +212,12 @@ class FusionEngine:
             return cfg.max_flash_acoustic_range_m / c + cfg.clock_error_s
 
         if same_node:
-            return 0.150 + cfg.clock_error_s  # same node, same modality: a re-detect
+            # Same node, any other modality pairing (incl. same-modality
+            # re-detects on one blast's onset+tail): both are effectively
+            # instantaneous at node scale, so a short fixed window is
+            # appropriate here. Only the optical<->acoustic pair above has
+            # its own genuine propagation delay to account for.
+            return 0.150 + cfg.clock_error_s
 
         # Different nodes: derived from THEIR baseline, not a global constant.
         node_a, node_b = self.nodes[a.node_id], self.nodes[b.node_id]
@@ -242,10 +246,15 @@ class FusionEngine:
             return False
 
         if a.node_id == b.node_id:
-            if a.modality == b.modality:
-                return True
-            # Flash and acoustic from one node: bearings must agree, since
-            # both look at the same muzzle from the same place.
+            # Same node, same OR different modality: still require bearing
+            # agreement. Two genuinely distinct events at one node (a rapid
+            # double-tap, or two shooters near the same node moments apart)
+            # both pass the timing gate above; without a bearing check they
+            # would silently merge into one track and one contact would be
+            # dropped from the count. The re-detect case this gate is meant
+            # to allow (one blast, two detector triggers on its own onset and
+            # tail) is bearing-consistent by construction, so this costs
+            # nothing there.
             sigma = math.hypot(a.azimuth_sigma_deg, b.azimuth_sigma_deg)
             return abs(wrap_deg(a.azimuth_deg - b.azimuth_deg)) <= cfg.bearing_gate_sigma * max(sigma, 1.0)
 
@@ -377,8 +386,19 @@ class FusionEngine:
             track.position_enu = tuple(point)
             track.position_latlon = self.frame.to_geodetic(point[0], point[1])
             # Along-track error is the dt sigma; cross-track is the bearing arc.
+            # Orientation must follow whichever term actually won the max() --
+            # cross-track normally dominates at range (a few degrees of
+            # bearing sigma swamps a few metres of timing sigma), so the
+            # ellipse's long axis is usually PERPENDICULAR to the bearing,
+            # not along it. Hardcoding azimuth_deg as the orientation would
+            # draw the uncertainty rotated 90 degrees from its true shape.
             cross = dt_range * math.tan(math.radians(primary.azimuth_sigma_deg))
-            track.ellipse = (max(cross, dt_sigma), min(cross, dt_sigma), primary.azimuth_deg)
+            along_track_deg = primary.azimuth_deg
+            cross_track_deg = (primary.azimuth_deg + 90.0) % 360.0
+            if cross >= dt_sigma:
+                track.ellipse = (cross, dt_sigma, cross_track_deg)
+            else:
+                track.ellipse = (dt_sigma, cross, along_track_deg)
             track.cep50_m = 1.1774 * math.sqrt(cross * dt_sigma)
         else:
             track.range_method = "none"
@@ -537,4 +557,12 @@ class FusionEngine:
         # (5) Penalty for self-declared multipath.
         multipath = 0.75 if any(r.flags & FLAG_MULTIPATH_SUSPECT for r in cluster) else 1.0
 
-        return float(np.clip(detection * corroboration * spatial * geometry * multipath, 0.0, 1.0))
+        product = detection * corroboration * spatial * geometry * multipath
+        # np.clip(nan, 0, 1) returns nan, not a bounded value -- a malformed
+        # upstream class_confidence (NaN or out-of-[0,1]) would otherwise
+        # propagate into track.confidence and silently fail every >= alert
+        # comparison downstream (NaN comparisons are always False) instead of
+        # being caught here, where the malformed input actually originates.
+        if not math.isfinite(product):
+            return 0.0
+        return float(np.clip(product, 0.0, 1.0))

@@ -190,6 +190,15 @@ def _peak_sharpness(values: np.ndarray, peak: int) -> float:
     while right < n - 1 and values[right + 1] <= values[right]:
         right += 1
 
+    # A near-zero main peak (dead/disconnected channel, or a window pulled
+    # before any real signal arrived) means there is no coherent correlation
+    # at all -- not a maximally sharp one. Falling through to the ratio below
+    # would divide ~0 by ~0's floor and return +inf, which estimate_doa then
+    # reads as the BEST possible peak quality and drives sigma toward zero:
+    # exactly backwards. Report the worst-case sharpness instead.
+    if values[peak] <= 1e-20:
+        return 1.0
+
     masked = values.copy()
     masked[left:right + 1] = 0.0
     second = float(masked.max())
