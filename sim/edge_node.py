@@ -42,7 +42,7 @@ from parallax.contact import (
     FLAG_MULTIPATH_SUSPECT,
 )
 from parallax.doa import estimate_doa
-from parallax.features import bandpass, detect_onset
+from parallax.features import bandpass, detect_onsets
 
 PRE_TRIGGER_S = 0.003
 # GCC-PHAT correlates over the WHOLE window with equal per-bin weight (that
@@ -66,11 +66,13 @@ class EdgeNode:
         self.lat, self.lon = lat, lon
 
     # -- FPGA: detect ------------------------------------------------------
-    def detect(self, audio: np.ndarray, fs: float) -> int | None:
+    def detect(self, audio: np.ndarray, fs: float) -> list[int]:
         threshold = self.profile.detector_threshold_sigma if self.profile else 6.0
         # Detector runs on the bandpassed reference channel, per the PS.
+        # Up to two onsets: a ballistic shockwave (if present) arrives ahead
+        # of the muzzle blast as a distinct transient.
         reference = bandpass(audio[0], fs)
-        return detect_onset(reference, fs, threshold_sigma=threshold)
+        return detect_onsets(reference, fs, threshold_sigma=threshold)
 
     # -- FPGA + MCU: bearing ----------------------------------------------
     def bearing(self, audio: np.ndarray, fs: float, onset: int):
@@ -101,57 +103,80 @@ class EdgeNode:
 
     # -- MCU: emit ---------------------------------------------------------
     def make_acoustic_report(self, audio, fs, t_capture_start_s, peak_spl_db,
-                             snr_db, t0_ns: int) -> ContactReport | None:
-        onset = self.detect(audio, fs)
-        if onset is None:
-            return None
+                             snr_db, t0_ns: int) -> list[ContactReport]:
+        """One report per detected onset (0, 1, or 2 -- see detect_onsets).
 
-        try:
-            doa, window = self.bearing(audio, fs, onset)
-        except (ValueError, np.linalg.LinAlgError):
-            # A degenerate DoA solve (near-zero solution norm, typically at
-            # very low SNR) is a "no usable bearing" outcome, exactly like
-            # a missed detector trigger -- not a crash. The energy detector
-            # can fire on a transient too weak for GCC-PHAT to resolve a
-            # coherent wavefront from; the node should stay silent, not die.
-            return None
-        threat, confidence = self.classify(window, fs)
-
+        When exactly two onsets fire, the earlier one is the ballistic
+        shockwave and the later is the muzzle blast: the shockwave always
+        outruns the blast to a given point (it travels supersonic for part
+        of its path), so onset order is a reliable modality label, not a
+        guess. A single onset is treated as the blast, exactly as before --
+        this preserves the existing single-transient behaviour unchanged.
+        """
+        onsets = self.detect(audio, fs)
         inflation = self.profile.bearing_sigma_inflation if self.profile else 1.0
-        sigma = doa.azimuth_sigma_deg * inflation
+        reports: list[ContactReport] = []
 
-        flags = FLAG_GPS_LOCKED
-        if doa.elevation_valid:
-            flags |= FLAG_ELEVATION_VALID
-        if doa.multipath_suspect:
-            flags |= FLAG_MULTIPATH_SUSPECT
+        for idx, onset in enumerate(onsets):
+            try:
+                doa, window = self.bearing(audio, fs, onset)
+            except (ValueError, np.linalg.LinAlgError):
+                # A degenerate DoA solve (near-zero solution norm, typically
+                # at very low SNR) is a "no usable bearing" outcome, exactly
+                # like a missed detector trigger -- not a crash. The energy
+                # detector can fire on a transient too weak for GCC-PHAT to
+                # resolve a coherent wavefront from; skip this onset, not
+                # the whole node.
+                continue
 
-        # Bearing is body-frame; rotate into true north by the node heading.
-        azimuth = (doa.azimuth_deg + self.node.heading_deg) % 360.0
+            is_shockwave = idx == 0 and len(onsets) == 2
+            if is_shockwave:
+                # Not run through the trained classifier: it is tuned on
+                # blast-shaped transients, not N-waves, and would likely
+                # emit a meaningless label. A supersonic shockwave preceding
+                # a blast is itself an unambiguous gunshot signature in this
+                # simulator, so hardcode it -- same treatment as the optical
+                # report's threat_class.
+                modality = Modality.ACOUSTIC_SHOCKWAVE
+                threat, confidence = ThreatClass.GUNSHOT, 0.70
+            else:
+                modality = Modality.ACOUSTIC
+                threat, confidence = self.classify(window, fs)
 
-        self.seq += 1
-        t_event_ns = int(t0_ns + (t_capture_start_s + onset / fs) * 1e9)
-        return ContactReport(
-            node_id=self.node.node_id,
-            seq=self.seq,
-            t_event_ns=t_event_ns,
-            modality=Modality.ACOUSTIC,
-            threat_class=threat,
-            class_confidence=confidence,
-            azimuth_deg=azimuth,
-            azimuth_sigma_deg=sigma,
-            elevation_deg=doa.elevation_deg,
-            elevation_sigma_deg=sigma * 1.5 if doa.elevation_valid else 0.0,
-            range_m=0.0,  # acoustic muzzle blast alone carries NO range
-            range_sigma_m=0.0,
-            peak_spl_db=peak_spl_db,
-            snr_db=snr_db,
-            node_lat=self.lat,
-            node_lon=self.lon,
-            node_alt_m=self.node.alt_m,
-            node_heading_deg=self.node.heading_deg,
-            flags=flags,
-        )
+            sigma = doa.azimuth_sigma_deg * inflation
+            flags = FLAG_GPS_LOCKED
+            if doa.elevation_valid:
+                flags |= FLAG_ELEVATION_VALID
+            if doa.multipath_suspect:
+                flags |= FLAG_MULTIPATH_SUSPECT
+
+            # Bearing is body-frame; rotate into true north by node heading.
+            azimuth = (doa.azimuth_deg + self.node.heading_deg) % 360.0
+
+            self.seq += 1
+            t_event_ns = int(t0_ns + (t_capture_start_s + onset / fs) * 1e9)
+            reports.append(ContactReport(
+                node_id=self.node.node_id,
+                seq=self.seq,
+                t_event_ns=t_event_ns,
+                modality=modality,
+                threat_class=threat,
+                class_confidence=confidence,
+                azimuth_deg=azimuth,
+                azimuth_sigma_deg=sigma,
+                elevation_deg=doa.elevation_deg,
+                elevation_sigma_deg=sigma * 1.5 if doa.elevation_valid else 0.0,
+                range_m=0.0,  # neither acoustic transient alone carries range
+                range_sigma_m=0.0,
+                peak_spl_db=peak_spl_db,
+                snr_db=snr_db,
+                node_lat=self.lat,
+                node_lon=self.lon,
+                node_alt_m=self.node.alt_m,
+                node_heading_deg=self.node.heading_deg,
+                flags=flags,
+            ))
+        return reports
 
     def make_optical_report(self, true_bearing_deg: float, t_shot_ns: int,
                             sigma_deg: float = 0.6, confidence: float = 0.82,

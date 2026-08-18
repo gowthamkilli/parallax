@@ -11,6 +11,7 @@ asserted.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -19,6 +20,7 @@ import numpy as np
 
 from parallax import profiles
 from parallax.classifier import TransientClassifier
+from parallax.contact import Modality
 from parallax.fusion import FusionEngine, NodeState, speed_of_sound
 from parallax.geometry import LocalFrame, bearing_between, cross_range_error
 from sim.edge_node import EdgeNode
@@ -42,6 +44,10 @@ def main():
                         help="simulate a daylight/defilade flash miss")
     parser.add_argument("--multipath", action="store_true",
                         help="add a specular reflection off a facade")
+    parser.add_argument("--no-shockwave", action="store_true",
+                        help="disable ballistic shockwave modelling")
+    parser.add_argument("--bullet-speed", type=float, default=880.0,
+                        help="assumed bullet speed, m/s (ESTIMATE)")
     parser.add_argument("--nodes", type=int, default=3, choices=(1, 2, 3))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model", type=Path, default=Path("out/classifier.pkl"))
@@ -62,7 +68,13 @@ def main():
     anchor = squad[1] if len(squad) > 1 else squad[0]
     theta = math.radians(args.bearing)
     truth = anchor.enu + args.range * np.array([math.sin(theta), math.cos(theta)])
-    shot = Shot(enu=truth, t_shot_s=0.0, visible_flash=not args.no_optical)
+    # Bullet trajectory: the shooter is firing at the patrol, so aim it
+    # toward the anchor node -- gives the anchor node alpha=0 (dead on-axis)
+    # for a clean shockwave-ranging demo, while other nodes see whatever
+    # miss angle the actual squad geometry produces.
+    trajectory_bearing = None if args.no_shockwave else bearing_between(truth, anchor.enu)
+    shot = Shot(enu=truth, t_shot_s=0.0, visible_flash=not args.no_optical,
+                trajectory_bearing_deg=trajectory_bearing, bullet_speed_mps=args.bullet_speed)
 
     reflection = None
     if args.multipath:
@@ -110,20 +122,22 @@ def main():
                   f"{optical.azimuth_sigma_deg:>7.2f} {'-':>7} "
                   f"{optical.threat_class.name:<10} {optical.class_confidence:>5.2f}")
 
-        acoustic = edge.make_acoustic_report(
+        acoustic_reports = edge.make_acoustic_report(
             audio, FS, t_capture_start_s=capture_start, peak_spl_db=peak_spl,
             snr_db=args.snr, t0_ns=T0_NS,
         )
-        if acoustic is None:
+        if not acoustic_reports:
             print(f"{sim_node.node_id:>5} {'ACOUSTIC':<9}  no detection (below threshold)")
             continue
-        reports.append(acoustic)
-        print(f"{sim_node.node_id:>5} {'ACOUSTIC':<9} {true_bearing:>8.2f} "
-              f"{acoustic.azimuth_deg:>8.2f} "
-              f"{_werr(acoustic.azimuth_deg, true_bearing):>7.2f} "
-              f"{acoustic.azimuth_sigma_deg:>7.2f} "
-              f"{acoustic.elevation_deg:>7.2f} "
-              f"{acoustic.threat_class.name:<10} {acoustic.class_confidence:>5.2f}")
+        for acoustic in acoustic_reports:
+            reports.append(acoustic)
+            label = "SHOCKWAVE" if acoustic.modality == Modality.ACOUSTIC_SHOCKWAVE else "ACOUSTIC"
+            print(f"{sim_node.node_id:>5} {label:<9} {true_bearing:>8.2f} "
+                  f"{acoustic.azimuth_deg:>8.2f} "
+                  f"{_werr(acoustic.azimuth_deg, true_bearing):>7.2f} "
+                  f"{acoustic.azimuth_sigma_deg:>7.2f} "
+                  f"{acoustic.elevation_deg:>7.2f} "
+                  f"{acoustic.threat_class.name:<10} {acoustic.class_confidence:>5.2f}")
 
     if not reports:
         print("\nNo contacts. Nothing to fuse.")
@@ -138,7 +152,11 @@ def main():
                   frame.to_geodetic(n.enu[0], n.enu[1]))), temp_c=n.temp_c)
         for n in squad
     ]
-    engine = FusionEngine(node_states, frame, config=profile.fusion)
+    # Fusion assumes a bullet speed independently of the simulator's truth
+    # value; default them equal so the demo's shockwave range recovers
+    # cleanly, without mutating the profile's shared FusionConfig instance.
+    fusion_config = dataclasses.replace(profile.fusion, bullet_speed_mps=args.bullet_speed)
+    engine = FusionEngine(node_states, frame, config=fusion_config)
     tracks = engine.process(reports)
 
     print("\n" + "=" * 74)

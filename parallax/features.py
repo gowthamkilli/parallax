@@ -83,6 +83,60 @@ def detect_onset(x: np.ndarray, fs: float, threshold_sigma: float = 6.0,
     return int(above[0]) if len(above) else None
 
 
+def detect_onsets(x: np.ndarray, fs: float, threshold_sigma: float = 6.0,
+                  noise_window_s: float = 0.05, blanking_s: float = 0.020,
+                  max_onsets: int = 2) -> list[int]:
+    """Sample indices of up to ``max_onsets`` distinct transients.
+
+    Finds the first threshold crossing exactly as ``detect_onset`` does, then
+    re-arms and keeps scanning -- e.g. for a ballistic shockwave arriving
+    ahead of its own muzzle blast.
+
+    Re-arming is NOT a fixed time offset from the onset. A real blast pulse
+    (and this simulator's added ringing texture -- see friedlander()'s
+    `ring` term) does not decay monotonically: at clean SNR it crosses back
+    above a 6-sigma threshold intermittently for the pulse's full ~15-20 ms
+    settling time (the same duration WINDOW_S in sim/edge_node.py is sized
+    around). A bare "wait N ms then re-arm" scheme re-arms straight into the
+    middle of that ringing and manufactures a second "transient" out of one
+    pulse's own tail -- this was caught empirically, not hypothesised.
+    Instead, re-arming requires a full ``blanking_s`` of GENUINELY
+    UNINTERRUPTED quiet (hysteresis), so it only fires again once the
+    transient has actually finished. 20 ms is an ESTIMATE sized to that
+    settling time; a real shockwave-to-blast gap shorter than it (which
+    happens only very close to the Mach-cone edge, where the ranging
+    validity gate is already marginal -- see fusion.py) will not resolve as
+    two onsets. This is a real, tested limitation, not an oversight.
+    """
+    n_noise = max(int(noise_window_s * fs), 64)
+    if len(x) <= n_noise:
+        return []
+    noise_rms = float(np.sqrt(np.mean(np.square(x[:n_noise])))) + 1e-12
+    threshold = threshold_sigma * noise_rms
+    blank_n = max(int(blanking_s * fs), 1)
+    above = np.abs(x) > threshold
+    n = len(x)
+
+    onsets: list[int] = []
+    cursor = 0
+    while len(onsets) < max_onsets and cursor < n:
+        rel = np.nonzero(above[cursor:])[0]
+        if len(rel) == 0:
+            break
+        onset = cursor + int(rel[0])
+        onsets.append(onset)
+
+        # Scan forward for the first fully-quiet blank_n-sample window.
+        i = onset
+        while i < n:
+            still_above = np.nonzero(above[i:i + blank_n])[0]
+            if len(still_above) == 0:
+                break  # blank_n consecutive quiet samples found at i
+            i += int(still_above[-1]) + 1
+        cursor = i + blank_n if i < n else n
+    return onsets
+
+
 def extract(x: np.ndarray, fs: float) -> np.ndarray:
     """Feature vector for one transient window. Returns len(FEATURE_NAMES) floats."""
     x = np.asarray(x, dtype=float)

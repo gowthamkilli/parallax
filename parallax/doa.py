@@ -37,6 +37,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.signal import windows as scipy_windows
 
 C_SOUND = 343.0  # m/s at 20 C, dry air. Varies ~0.6 m/s per degree C.
 
@@ -240,6 +241,20 @@ def estimate_doa(
     n_mics = geometry.n_mics
     if channels.shape[0] != n_mics:
         raise ValueError(f"expected {n_mics} channels, got {channels.shape[0]}")
+
+    # A hard-edged analysis window (a fixed-length slice around the detected
+    # onset, as sim/edge_node.py's bearing() produces) has a discontinuity
+    # at each edge, at the IDENTICAL sample offset on every channel. PHAT
+    # whitening is extremely sensitive to that: the edge is broadband and
+    # perfectly time-aligned across channels, so it can produce a spurious,
+    # highly coherent ZERO-LAG correlation peak that outweighs the true,
+    # genuinely time-shifted arrival -- caught empirically (every mic pair
+    # correlating to near-zero delay regardless of true geometry, at any
+    # range or SNR). A short taper on each edge removes that discontinuity's
+    # energy without touching the pulse itself, which by construction (see
+    # WINDOW_S's margin) sits well clear of the edges.
+    if channels.shape[1] >= 8:
+        channels = channels * scipy_windows.tukey(channels.shape[1], alpha=0.2)
 
     max_delay = geometry.aperture_m / c * 1.5
     rows, rhs, sharpnesses = [], [], []

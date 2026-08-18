@@ -26,10 +26,19 @@ What is physically modelled
   different bearing. This is the multipath case, and it is the one that
   breaks bearings.
 
+* Ballistic shockwave (the "crack"), when ``Shot.trajectory_bearing_deg`` is
+  set: a Mach-cone tangency solution gives each mic its own shockwave arrival
+  time and emission-point distance, ahead of the muzzle blast. Only rendered
+  for mics within the Mach cone (angular offset from the line of fire <=
+  theta_m = asin(1/M)); mics outside it get no shockwave pulse at all, which
+  is physically correct. The waveform itself reuses the Friedlander helper
+  with a much shorter tau as a stand-in for a proper N-wave -- an ESTIMATE,
+  not a claim about the true shockwave shape.
+
 What is NOT modelled
 --------------------
-* The supersonic ballistic shockwave (the "crack"). Excluded from v1 by
-  design; only the muzzle blast is generated.
+* Bullet deceleration (constant speed assumed) and per-weapon-class muzzle
+  velocities.
 * Wind-driven refraction, ground impedance, terrain shadowing, temperature
   gradients. All of these matter in the field. See docs/04-limitations.md.
 """
@@ -77,6 +86,10 @@ class Shot:
     height_m: float = 1.5
     source_spl_db: float = 155.0  # peak SPL at 1 m for a typical rifle (ESTIMATE)
     visible_flash: bool = True
+    # Ballistic shockwave. None = not modelled (backward compatible default);
+    # set both to render a second, earlier transient per mic.
+    trajectory_bearing_deg: float | None = None  # compass bearing of bullet travel
+    bullet_speed_mps: float = 880.0  # ESTIMATE: typical 5.56mm muzzle velocity, no drag
 
 
 def friedlander(fs: float, duration_s: float = 0.06, tau_s: float = 0.0011,
@@ -131,18 +144,65 @@ def render_node_audio(
     """
     rng = rng or np.random.default_rng(0)
     c = speed_of_sound(temp_c)
-    n_samples = int(duration_s * fs)
 
     source = np.array([shot.enu[0], shot.enu[1], shot.height_m])
     mics = node.mic_positions_enu()
-    distances = np.linalg.norm(mics - source, axis=1)
-    arrival_times = shot.t_shot_s + distances / c
+    delta = mics - source
+    distances = np.linalg.norm(delta, axis=1)
+    arrival_times_abs = shot.t_shot_s + distances / c
+
+    # -- ballistic shockwave, per mic (Mach-cone tangency solution) --------
+    # See docs/02-fusion-logic.md and parallax/fusion.py's
+    # _range_from_shockwave_blast docstring for the derivation. Only mics
+    # within the Mach cone (angular offset from the line of fire <= theta_m)
+    # get a shockwave pulse at all -- the rest hear only the blast.
+    shock_times_abs = None
+    shock_emission_dist = None
+    if shot.trajectory_bearing_deg is not None and shot.bullet_speed_mps > c:
+        theta = math.radians(shot.trajectory_bearing_deg)
+        traj_dir = np.array([math.sin(theta), math.cos(theta), 0.0])
+        mach = shot.bullet_speed_mps / c
+        theta_m = math.asin(1.0 / mach)
+
+        along = delta @ traj_dir
+        cross_vec = delta - np.outer(along, traj_dir)
+        cross_dist = np.linalg.norm(cross_vec, axis=1)
+        alpha = np.arctan2(cross_dist, along)
+        valid = alpha <= theta_m
+
+        x_prime = along - cross_dist * math.sqrt(mach * mach - 1.0)
+        emission_dist = cross_dist * mach
+        t_shock = shot.t_shot_s + x_prime / shot.bullet_speed_mps + emission_dist / c
+        shock_times_abs = np.where(valid, t_shock, np.nan)
+        shock_emission_dist = np.where(valid, emission_dist, np.nan)
 
     if capture_start_s is None:
-        capture_start_s = float(arrival_times.min()) - pre_roll_s
-    arrival_times = arrival_times - capture_start_s
+        earliest = float(arrival_times_abs.min())
+        if shock_times_abs is not None and np.any(~np.isnan(shock_times_abs)):
+            earliest = min(earliest, float(np.nanmin(shock_times_abs)))
+        capture_start_s = earliest - pre_roll_s
+
+    # A real node's buffer is sized generously in hardware; the simulator
+    # must not silently truncate a real detection to save memory. The
+    # shockwave-to-blast gap can be a large fraction of a second at
+    # realistic ranges (it is NOT small like the flash/acoustic gap it
+    # otherwise resembles), so a fixed duration_s sized for a single pulse
+    # can clip the blast out of the buffer entirely once a shockwave is
+    # also being rendered -- extend past the caller's requested duration_s
+    # rather than let that happen.
+    latest = float(arrival_times_abs.max())
+    required_s = (latest - capture_start_s) + 0.05
+    n_samples = max(int(duration_s * fs), int(math.ceil(required_s * fs)))
+
+    arrival_times = arrival_times_abs - capture_start_s
+    shock_times = shock_times_abs - capture_start_s if shock_times_abs is not None else None
 
     pulse = friedlander(fs, rng=rng)
+    # Shorter, higher-frequency stand-in for a true N-wave shockwave -- an
+    # ESTIMATE, not a claim about the exact shockwave shape (see module
+    # docstring).
+    shock_pulse = friedlander(fs, duration_s=0.01, tau_s=0.00015, rng=rng) \
+        if shock_times_abs is not None else None
     audio = np.zeros((node.geometry.n_mics, n_samples))
 
     reference = float(distances.mean())
@@ -167,6 +227,12 @@ def render_node_audio(
                 n_samples,
                 fs,
             )
+
+        if shock_pulse is not None and not math.isnan(shock_emission_dist[i]):
+            s_distance = float(shock_emission_dist[i])
+            s_shaped = _atmospheric_lowpass(shock_pulse, fs, s_distance)
+            s_amplitude = 1.0 / max(s_distance, 1.0)
+            audio[i] += _place(s_shaped * s_amplitude, float(shock_times[i]), n_samples, fs)
 
     signal_rms = float(np.sqrt(np.mean(np.square(audio[audio != 0]))) if np.any(audio) else 1e-9)
     noise_rms = signal_rms / (10 ** (snr_db / 20))

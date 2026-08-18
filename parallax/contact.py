@@ -33,6 +33,7 @@ class Modality(IntEnum):
     OPTICAL_IR = 1
     RF_PASSIVE = 2
     SEISMIC = 3
+    ACOUSTIC_SHOCKWAVE = 4  # ballistic crack, distinct from the muzzle blast
 
 
 class ThreatClass(IntEnum):

@@ -168,12 +168,25 @@ class FusionConfig:
     max_crossing_cep_m: float = 250.0  # beyond this the "fix" is not a fix
     min_crossing_angle_deg: float = 15.0
     mesh_relevance_m: float = 3000.0
+    # Acoustic-only (shockwave/blast) ranging. bullet_speed_mps is an
+    # ESTIMATE (typical rifle round); max_shockwave_miss_angle_deg is a
+    # ceiling on top of the physically-derived Mach angle theta_m, not a
+    # substitute for it -- see _range_from_shockwave_blast.
+    bullet_speed_mps: float = 880.0
+    bullet_speed_uncertainty_mps: float = 40.0
+    max_shockwave_miss_angle_deg: float = 30.0
+    shockwave_onset_jitter_s: float = 0.003
     modality_weights: dict = field(
         default_factory=lambda: {
             Modality.OPTICAL_IR: 1.0,
             Modality.ACOUSTIC: 0.85,
             Modality.RF_PASSIVE: 0.6,
             Modality.SEISMIC: 0.35,  # confirmation only, never a primary fix
+            Modality.ACOUSTIC_SHOCKWAVE: 0.7,  # below ACOUSTIC: weaker SNR,
+            # shorter transient, and this keeps the blast (not the
+            # shockwave) selected as `primary` for bearing/position when
+            # both exist -- the shockwave's own DoA points at its Mach-cone
+            # emission point, not at the muzzle.
         }
     )
 
@@ -211,12 +224,26 @@ class FusionEngine:
             c = speed_of_sound(self.nodes[a.node_id].temp_c)
             return cfg.max_flash_acoustic_range_m / c + cfg.clock_error_s
 
+        shockwave = {a.modality, b.modality} == {Modality.ACOUSTIC, Modality.ACOUSTIC_SHOCKWAVE}
+        if same_node and shockwave:
+            # Shockwave-to-blast: also a genuine propagation-time gap, not
+            # an instantaneous pairing like flash/acoustic. Worst case
+            # (alpha=0, dead on-axis) the gap is (D/c)*(M-1)/M, which for a
+            # typical rifle at max_flash_acoustic_range_m can run into the
+            # ~1-2 s range -- far past the 150 ms window below, which would
+            # otherwise silently prevent the pair from ever associating.
+            c = speed_of_sound(self.nodes[a.node_id].temp_c)
+            mach = cfg.bullet_speed_mps / c
+            f_max = (mach - 1.0) / mach if mach > 1.0 else 0.0
+            return cfg.max_flash_acoustic_range_m / c * f_max + cfg.clock_error_s
+
         if same_node:
             # Same node, any other modality pairing (incl. same-modality
             # re-detects on one blast's onset+tail): both are effectively
             # instantaneous at node scale, so a short fixed window is
-            # appropriate here. Only the optical<->acoustic pair above has
-            # its own genuine propagation delay to account for.
+            # appropriate here. Only the optical<->acoustic and
+            # shockwave<->acoustic pairs above have their own genuine
+            # propagation delay to account for.
             return 0.150 + cfg.clock_error_s
 
         # Different nodes: derived from THEIR baseline, not a global constant.
@@ -246,6 +273,18 @@ class FusionEngine:
             return False
 
         if a.node_id == b.node_id:
+            if {a.modality, b.modality} == {Modality.ACOUSTIC, Modality.ACOUSTIC_SHOCKWAVE}:
+                # The shockwave's own DoA points at its Mach-cone emission
+                # point, not at the muzzle, so it is EXPECTED to disagree
+                # with the blast's bearing by design (that separation, gamma,
+                # is exactly what _range_from_shockwave_blast uses to
+                # recover the miss angle) -- the bearing-agreement gate below
+                # does not apply to this pair. The precise geometric validity
+                # check (0 <= gamma <= theta_m) happens there instead, with
+                # an honest decline rather than a fabricated range when it
+                # fails; association only needs to let the pair through to
+                # reach that check.
+                return True
             # Same node, same OR different modality: still require bearing
             # agreement. Two genuinely distinct events at one node (a rapid
             # double-tap, or two shooters near the same node moments apart)
@@ -338,6 +377,9 @@ class FusionEngine:
         # -- method (a): flash/acoustic dt on a single node ----------------
         ranged = self._range_from_flash_acoustic(cluster, notes)
 
+        # -- method (a2): shockwave/blast dt on a single node, acoustic-only
+        shock_ranged = self._range_from_shockwave_blast(cluster, notes)
+
         # -- method (b): triangulation from >=2 bearings --------------------
         fixed = self._triangulate_cluster(cluster, notes)
 
@@ -347,6 +389,8 @@ class FusionEngine:
         track.primary_node_id = primary.node_id
         track.bearing_deg = primary.azimuth_deg
         track.bearing_sigma_deg = primary.azimuth_sigma_deg
+
+        single_node = self._reconcile_single_node_ranges(ranged, shock_ranged, notes)
 
         if fixed is not None:
             point, cov = fixed
@@ -358,25 +402,26 @@ class FusionEngine:
             track.range_m = float(np.linalg.norm(point - node.enu))
             track.range_sigma_m = max(track.cep50_m, 1.0)
             track.range_method = "triangulation"
-            if ranged is not None:
-                # Both methods fired. Prefer the dt range for the *scalar*
-                # range readout (it is tighter) but keep the triangulated
-                # position, and record the disagreement as a health check.
-                dt_range, dt_sigma = ranged
+            if single_node is not None:
+                # Both a single-node dt method and triangulation fired.
+                # Prefer the dt range for the *scalar* range readout (it is
+                # tighter) but keep the triangulated position, and record
+                # the disagreement as a health check.
+                dt_range, dt_sigma, dt_method = single_node
                 disagreement = abs(dt_range - track.range_m)
                 notes.append(
-                    f"dt-range {dt_range:.0f} m vs triangulated {track.range_m:.0f} m "
+                    f"{dt_method} {dt_range:.0f} m vs triangulated {track.range_m:.0f} m "
                     f"(delta {disagreement:.0f} m)"
                 )
                 if disagreement < 3 * math.hypot(dt_sigma, track.range_sigma_m):
                     track.range_m, track.range_sigma_m = dt_range, dt_sigma
-                    track.range_method = "flash_acoustic_dt+triangulation"
+                    track.range_method = f"{dt_method}+triangulation"
                 else:
                     notes.append("METHODS DISAGREE - treat position as suspect")
-        elif ranged is not None:
-            dt_range, dt_sigma = ranged
+        elif single_node is not None:
+            dt_range, dt_sigma, dt_method = single_node
             track.range_m, track.range_sigma_m = dt_range, dt_sigma
-            track.range_method = "flash_acoustic_dt"
+            track.range_method = dt_method
             node = self.nodes[primary.node_id]
             direction = np.array([
                 math.sin(math.radians(primary.azimuth_deg)),
@@ -402,7 +447,10 @@ class FusionEngine:
             track.cep50_m = 1.1774 * math.sqrt(cross * dt_sigma)
         else:
             track.range_method = "none"
-            notes.append("BEARING ONLY - single node, no optical pair, no crossing fix")
+            notes.append(
+                "BEARING ONLY - single node, no optical pair, no shockwave "
+                "pair, no crossing fix"
+            )
 
         track.confidence = self._score(cluster, track)
         track.notes = notes
@@ -438,6 +486,170 @@ class FusionEngine:
                 f"node {node_id}: flash->acoustic dt {dt*1e3:.0f} ms @ c={c:.1f} m/s "
                 f"-> {rng:.0f} m (sigma {sigma:.1f} m: {sigma_time:.1f} timing / "
                 f"{sigma_temp:.1f} thermal)"
+            )
+            if best is None or sigma < best[1]:
+                best = (rng, sigma)
+        return best
+
+    def _reconcile_single_node_ranges(self, ranged, shock_ranged, notes):
+        """Pick the tighter of the available single-node dt range candidates.
+
+        flash/acoustic dt and shockwave/blast dt are both single-node
+        time-of-flight estimates; when both fire they are cross-checked
+        against each other (same 3-sigma-combined disagreement test used
+        below for dt-vs-triangulation) rather than silently averaged.
+        """
+        candidates = []
+        if ranged is not None:
+            candidates.append((ranged[0], ranged[1], "flash_acoustic_dt"))
+        if shock_ranged is not None:
+            candidates.append((shock_ranged[0], shock_ranged[1], "shockwave_dt"))
+        if not candidates:
+            return None
+        if len(candidates) == 2:
+            (r1, s1, m1), (r2, s2, m2) = candidates
+            disagreement = abs(r1 - r2)
+            notes.append(
+                f"{m1} {r1:.0f} m vs {m2} {r2:.0f} m (delta {disagreement:.0f} m)"
+            )
+            if disagreement >= 3 * math.hypot(s1, s2):
+                notes.append(
+                    "METHODS DISAGREE (flash/acoustic vs shockwave) - treat range as suspect"
+                )
+        return min(candidates, key=lambda c: c[1])
+
+    def _range_from_shockwave_blast(self, cluster, notes) -> tuple[float, float] | None:
+        """Acoustic-only range: shockwave-to-blast timing at a single node.
+
+        Unlike flash/acoustic dt, this Δt is NOT proportional to range on its
+        own -- light is ~instant but the shockwave is not. Range depends on
+        both dt and the node's angular offset (alpha, the "miss angle") from
+        the bullet's line of fire. alpha is not directly known, but it is
+        recoverable from quantities this node already measures: the blast's
+        own DoA bearing (points at the muzzle) and the shockwave's DoA
+        bearing (points at the shockwave's Mach-cone emission point, which
+        is NOT the muzzle). Their separation, gamma, relates to alpha and
+        the Mach angle theta_m = asin(1/M) by a closed-form identity derived
+        from the S-O-P triangle (S=muzzle, O=node, P=emission point):
+
+            gamma = theta_m - alpha        (valid iff 0 <= gamma <= theta_m)
+            D     = c * dt / f(alpha, M)
+            f(alpha, M) = 1 - cos(alpha)/M - M*sin(alpha) + sin(alpha)*sqrt(M^2-1)/M
+
+        theta_m is also the PHYSICAL existence boundary of the shockwave
+        itself (see sim/scenario.py) -- a node beyond it hears no crack at
+        all, only the blast. The gate below is min(configured ceiling,
+        theta_m), not a flat constant, for the same "derive gates from
+        geometry" reason the association windows are (docs/02-fusion-logic.md
+        §2): a flat ceiling wider than theta_m would let through geometries
+        where alpha comes out negative -- i.e. where the arithmetic, not the
+        physics, is telling you something is wrong.
+
+        Note: alpha=0 exactly (a node sitting dead on the trajectory line)
+        is a genuine degeneracy, not just a numerically awkward edge --
+        the shockwave's own emission point coincides with the node (R=0),
+        so its DoA bearing is undefined there. Real geometries essentially
+        never land exactly on that line, so this is not guarded explicitly;
+        it would surface as a NaN/undefined azimuth upstream, at report
+        creation, not silently here.
+
+        Ambiguity guard: if a cluster somehow contains MORE THAN ONE
+        ACOUSTIC or ACOUSTIC_SHOCKWAVE report for the same node -- which
+        should only happen if two distinct events were incorrectly merged
+        by association -- do not silently pick one pair by insertion order.
+        A plain dict keyed by modality would do exactly that (last-in-time
+        report of each modality wins), which can pair report A's shockwave
+        with unrelated report B's blast and produce a plausible-looking but
+        physically meaningless range. Decline for that node instead; this
+        does not fix the underlying over-merge (see fusion.py's own
+        association logic and the multi-shot stress test), it only stops
+        this function from papering over it with a fabricated number.
+        """
+        cfg = self.config
+        by_node: dict[int, dict] = {}
+        ambiguous_nodes: set[int] = set()
+        for report in cluster:
+            node_reports = by_node.setdefault(report.node_id, {})
+            if report.modality in node_reports:
+                ambiguous_nodes.add(report.node_id)
+            node_reports[report.modality] = report
+
+        best = None
+        for node_id, by_modality in by_node.items():
+            if node_id in ambiguous_nodes:
+                notes.append(
+                    f"node {node_id}: multiple ACOUSTIC/ACOUSTIC_SHOCKWAVE reports "
+                    "in one cluster (likely two events merged during association) "
+                    "- declining shockwave range rather than guessing which pair "
+                    "belongs together"
+                )
+                continue
+            blast = by_modality.get(Modality.ACOUSTIC)
+            shock = by_modality.get(Modality.ACOUSTIC_SHOCKWAVE)
+            if blast is None or shock is None:
+                continue
+
+            dt = (blast.t_event_ns - shock.t_event_ns) * NS
+            if dt <= 0:
+                notes.append(
+                    f"node {node_id}: non-physical shockwave dt {dt*1e3:.1f} ms, rejected"
+                )
+                continue
+
+            temp = self.nodes[node_id].temp_c
+            c = speed_of_sound(temp)
+            v_b = cfg.bullet_speed_mps
+            if v_b <= c:
+                notes.append(
+                    f"node {node_id}: assumed bullet speed {v_b:.0f} m/s is "
+                    "subsonic, no shockwave ranging possible"
+                )
+                continue
+            mach = v_b / c
+            theta_m = math.asin(1.0 / mach)
+
+            gamma = abs(wrap_deg(blast.azimuth_deg - shock.azimuth_deg))
+            gamma_rad = math.radians(gamma)
+            alpha_rad = theta_m - gamma_rad
+            gate_rad = min(math.radians(cfg.max_shockwave_miss_angle_deg), theta_m)
+            if not (0.0 <= alpha_rad <= gate_rad):
+                notes.append(
+                    f"node {node_id}: shockwave miss angle "
+                    f"{math.degrees(alpha_rad):.1f} deg outside "
+                    f"[0, {math.degrees(gate_rad):.1f}] deg - declining shockwave range"
+                )
+                continue
+
+            f_am = (1.0 - math.cos(alpha_rad) / mach - mach * math.sin(alpha_rad)
+                    + math.sin(alpha_rad) * math.sqrt(mach * mach - 1.0) / mach)
+            if f_am <= 1e-6:
+                notes.append(f"node {node_id}: degenerate shockwave geometry, rejected")
+                continue
+            rng = c * dt / f_am
+
+            # Error budget: dt (two independent onset detections -> jitter
+            # combined in quadrature), the miss-angle estimate (from the two
+            # bearing sigmas, since d(alpha)/d(gamma) = -1), and the assumed
+            # bullet-speed uncertainty. d(range)/d(alpha) is evaluated
+            # numerically rather than hand-derived -- f(alpha, M) is smooth
+            # and this runs once per candidate, so a small finite difference
+            # is a reasonable trade against an error-prone closed-form
+            # derivative in production code.
+            sigma_dt = c * math.hypot(cfg.shockwave_onset_jitter_s, cfg.onset_jitter_s) / f_am
+            sigma_alpha_rad = math.radians(
+                math.hypot(blast.azimuth_sigma_deg, shock.azimuth_sigma_deg)
+            )
+            d_alpha = 1e-4
+            f_plus = (1.0 - math.cos(alpha_rad + d_alpha) / mach
+                      - mach * math.sin(alpha_rad + d_alpha)
+                      + math.sin(alpha_rad + d_alpha) * math.sqrt(mach * mach - 1.0) / mach)
+            d_rng_d_alpha = (c * dt / f_plus - rng) / d_alpha if f_plus > 1e-6 else 0.0
+            sigma_speed = rng * (cfg.bullet_speed_uncertainty_mps / v_b)  # ESTIMATE, first-order
+            sigma = math.hypot(sigma_dt, d_rng_d_alpha * sigma_alpha_rad, sigma_speed)
+
+            notes.append(
+                f"node {node_id}: shockwave->blast dt {dt*1e3:.1f} ms, miss angle "
+                f"{math.degrees(alpha_rad):.1f} deg -> {rng:.0f} m (sigma {sigma:.1f} m)"
             )
             if best is None or sigma < best[1]:
                 best = (rng, sigma)

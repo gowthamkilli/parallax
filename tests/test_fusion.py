@@ -230,6 +230,100 @@ def test_outlier_bearing_is_rejected_with_three_nodes():
     assert np.linalg.norm(np.array(fixed[0].position_enu) - truth) < 60.0
 
 
+# -------------------------------------------------------- shockwave ranging
+def _shockwave_geometry(alpha_deg, D, bullet_speed_mps, temp_c=20.0):
+    """Independently construct the muzzle (S), node (O), and shockwave
+    emission point (P) for a trajectory pointing due north, then derive the
+    blast and shockwave arrival times from first-principles propagation
+    (bullet travel time to P, then sound from P to O; sound directly from S
+    to O) rather than through fusion.py's own algebraic dt formula. Keeping
+    this independent of _range_from_shockwave_blast's f(alpha, M) shortcut
+    is what makes the range-recovery test below a real check of the
+    implementation, not a circular one.
+    """
+    c = speed_of_sound(temp_c)
+    mach = bullet_speed_mps / c
+    theta_m = math.asin(1.0 / mach)
+    alpha = math.radians(alpha_deg)
+    assert alpha <= theta_m + 1e-9, "test geometry must stay inside the Mach cone"
+
+    cross = D * math.sin(alpha)
+    along = D * math.cos(alpha)
+    S = np.array([0.0, 0.0])
+    O = np.array([cross, along])
+    x_prime = along - cross * math.sqrt(mach * mach - 1.0)
+    P = np.array([0.0, x_prime])
+
+    blast_az = bearing_between(O, S)
+    shock_az = bearing_between(O, P)
+    t_blast = D / c
+    t_shock = x_prime / bullet_speed_mps + float(np.linalg.norm(O - P)) / c
+    return blast_az, shock_az, t_blast - t_shock, O
+
+
+def _shockwave_reports(blast_az, shock_az, dt_s):
+    dt_ns = int(round(dt_s * 1e9))
+    return [
+        ContactReport(node_id=1, seq=1, t_event_ns=T0, modality=Modality.ACOUSTIC_SHOCKWAVE,
+                      threat_class=ThreatClass.GUNSHOT, class_confidence=0.70,
+                      azimuth_deg=shock_az, azimuth_sigma_deg=2.0, flags=FLAG_GPS_LOCKED),
+        ContactReport(node_id=1, seq=2, t_event_ns=T0 + dt_ns, modality=Modality.ACOUSTIC,
+                      threat_class=ThreatClass.GUNSHOT, class_confidence=0.85,
+                      azimuth_deg=blast_az, azimuth_sigma_deg=1.5, flags=FLAG_GPS_LOCKED),
+    ]
+
+
+def test_shockwave_blast_range_recovered_near_axis():
+    """Near-axis (alpha=5 deg, well inside the Mach cone): recover the true
+    range from the shockwave/blast timing gap and the two on-node bearings
+    alone, no optical needed.
+
+    alpha=0 exactly is deliberately avoided: at R=0 the shockwave's Mach-cone
+    emission point coincides with the node itself, making its DoA bearing
+    mathematically undefined (a genuine degeneracy, not a numerical
+    artefact) -- see _range_from_shockwave_blast's module-level discussion.
+    """
+    d_true, v_b = 350.0, 880.0
+    blast_az, shock_az, dt_s, node_enu = _shockwave_geometry(5.0, d_true, v_b)
+    assert dt_s > 0
+    engine = FusionEngine(_nodes(tuple(node_enu)), ORIGIN,
+                          config=FusionConfig(bullet_speed_mps=v_b))
+    tracks = engine.process(_shockwave_reports(blast_az, shock_az, dt_s))
+
+    assert len(tracks) == 1, "shockwave and its own blast must not double-count"
+    track = tracks[0]
+    assert track.range_method == "shockwave_dt"
+    assert track.range_m == pytest.approx(d_true, rel=0.03)
+    assert set(track.modalities) == {"ACOUSTIC", "ACOUSTIC_SHOCKWAVE"}
+
+
+def test_shockwave_ranging_declines_beyond_gate():
+    """Past the configured ceiling, decline rather than fabricate a range."""
+    d_true, v_b = 350.0, 880.0
+    c = speed_of_sound(20.0)
+    theta_m_deg = math.degrees(math.asin(c / v_b))
+    alpha_deg = theta_m_deg * 0.9  # inside the physical Mach cone...
+    blast_az, shock_az, dt_s, node_enu = _shockwave_geometry(alpha_deg, d_true, v_b)
+    # ...but the configured ceiling is tighter, so the gate still bites.
+    cfg = FusionConfig(bullet_speed_mps=v_b, max_shockwave_miss_angle_deg=5.0)
+    engine = FusionEngine(_nodes(tuple(node_enu)), ORIGIN, config=cfg)
+    track = engine.process(_shockwave_reports(blast_az, shock_az, dt_s))[0]
+
+    assert track.range_method == "none"
+    assert any("declining shockwave range" in n for n in track.notes)
+
+
+def test_shockwave_dt_non_physical_is_rejected():
+    """A blast that appears to arrive before its own shockwave is rejected."""
+    node = _nodes((0.0, 0.0))[0]
+    engine = FusionEngine([node], ORIGIN)
+    reports = _shockwave_reports(blast_az=10.0, shock_az=30.0, dt_s=-0.05)
+    track = engine.process(reports)[0]
+
+    assert track.range_method == "none"
+    assert any("non-physical shockwave dt" in n for n in track.notes)
+
+
 def test_confidence_rises_with_corroboration():
     truth = np.array([200.0, 300.0])
     c = speed_of_sound(20.0)

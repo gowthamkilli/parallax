@@ -79,6 +79,7 @@ PERIMETER = MissionProfile(
             Modality.ACOUSTIC: 0.9,
             Modality.RF_PASSIVE: 0.7,
             Modality.SEISMIC: 0.6,
+            Modality.ACOUSTIC_SHOCKWAVE: 0.75,
         },
     ),
     detector_threshold_sigma=5.0,
@@ -103,6 +104,7 @@ CONVOY = MissionProfile(
             Modality.ACOUSTIC: 0.7,
             Modality.RF_PASSIVE: 0.6,
             Modality.SEISMIC: 0.0,
+            Modality.ACOUSTIC_SHOCKWAVE: 0.55,
         },
     ),
     detector_threshold_sigma=8.0,
@@ -130,6 +132,7 @@ PATROL = MissionProfile(
             Modality.ACOUSTIC: 0.9,
             Modality.RF_PASSIVE: 0.5,
             Modality.SEISMIC: 0.0,
+            Modality.ACOUSTIC_SHOCKWAVE: 0.75,
         },
     ),
     detector_threshold_sigma=6.0,
@@ -154,6 +157,8 @@ URBAN = MissionProfile(
             Modality.ACOUSTIC: 0.6,  # least trusted here, by design
             Modality.RF_PASSIVE: 0.7,
             Modality.SEISMIC: 0.0,
+            Modality.ACOUSTIC_SHOCKWAVE: 0.45,  # multipath makes both onset
+            # timing and the two-bearing miss-angle estimate less reliable
         },
     ),
     detector_threshold_sigma=7.0,
