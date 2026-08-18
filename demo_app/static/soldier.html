@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PARALLAX -- Soldier Display</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100vh; }
+  .banner {
+    display: flex;
+    justify-content: space-around;
+    padding: 22px 10px;
+    border-bottom: 1px solid var(--grid);
+    background: var(--panel);
+  }
+  .field { text-align: center; }
+  .field .label { font-size: 13px; color: var(--dim); letter-spacing: 0.08em; }
+  .field .value { font-size: 42px; font-weight: bold; margin-top: 6px; }
+  .dialwrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  #dial { width: 100%; height: 100%; max-width: 900px; max-height: 900px; }
+</style>
+</head>
+<body>
+  <div class="banner">
+    <div class="field"><div class="label">AZIMUTH</div><div class="value" id="fAzimuth">--</div></div>
+    <div class="field"><div class="label">RANGE</div><div class="value" id="fRange">--</div></div>
+    <div class="field"><div class="label">CONFIDENCE</div><div class="value" id="fConf">--</div></div>
+  </div>
+  <div class="dialwrap">
+    <svg id="dial" viewBox="0 0 800 800"></svg>
+  </div>
+  <script src="/soldier.js"></script>
+</body>
+</html>

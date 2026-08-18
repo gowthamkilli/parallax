@@ -13,6 +13,9 @@ out/*.png
 out/*.json
 out/*.csv
 
+# demo_app runtime state (event log) -- regenerated each server run
+demo_app/state.json
+
 .venv/
 venv/
 env/

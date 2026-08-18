@@ -1,0 +1,120 @@
+/* Shared dark theme, colours matched to viz/radar.py's palette so the live
+   demo and the static dashboard read as one system. */
+:root {
+  --bg: #0b1014;
+  --panel: #121a20;
+  --grid: #1f2d37;
+  --fg: #c8d6de;
+  --dim: #5d7180;
+  --accent: #00d9a3;
+  --warn: #ffb020;
+  --alert: #ff4d5e;
+  --node: #4aa3ff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Consolas", "Menlo", monospace;
+}
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--grid);
+  background: var(--panel);
+}
+
+.topbar .title {
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 0.08em;
+  color: var(--fg);
+}
+
+.topbar .subtitle {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: 4px;
+}
+
+button {
+  font-family: inherit;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--grid);
+  border-radius: 4px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+button:hover:not(:disabled) { border-color: var(--dim); }
+
+button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.run {
+  background: var(--accent);
+  color: #06110d;
+  font-weight: bold;
+  border-color: var(--accent);
+}
+
+button.run:disabled {
+  background: var(--panel);
+  color: var(--dim);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+th, td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--dim);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+tr.newest { background: rgba(0, 217, 163, 0.08); }
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.badge.alert { background: var(--alert); color: #200; }
+.badge.ok { background: var(--accent); color: #052; }
+.badge.none { background: var(--grid); color: var(--dim); }

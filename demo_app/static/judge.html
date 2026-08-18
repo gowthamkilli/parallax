@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PARALLAX -- Judge Console</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100vh; }
+  .main { flex: 1; display: flex; gap: 12px; padding: 12px; min-height: 0; }
+  .mapwrap { flex: 2; display: flex; align-items: center; justify-content: center; }
+  #map { width: 100%; height: 100%; max-width: 760px; max-height: 760px; }
+  .side { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 220px; }
+  .side h3 { margin: 0 0 6px 0; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .catbtns { display: flex; flex-direction: column; gap: 6px; }
+  .status { font-size: 13px; color: var(--dim); padding: 8px; }
+  .logwrap { padding: 10px; overflow-y: auto; max-height: 32vh; }
+  .footer { padding: 6px 18px; font-size: 10px; color: var(--dim); border-top: 1px solid var(--grid); }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <span class="title">PARALLAX</span>
+      <span class="subtitle">&nbsp; JUDGE CONSOLE</span>
+    </div>
+    <div class="subtitle">click map to place enemy &middot; pick a category &middot; RUN</div>
+  </div>
+
+  <div class="main">
+    <div class="mapwrap panel">
+      <svg id="map" viewBox="0 0 800 800"></svg>
+    </div>
+    <div class="side">
+      <div class="panel" style="padding:10px;">
+        <h3>Category</h3>
+        <div class="catbtns" id="catbtns"></div>
+      </div>
+      <div class="panel" style="padding:10px;">
+        <button class="run" id="runBtn" disabled>RUN / EXECUTE</button>
+        <div class="status" id="status">Click the map to place the enemy position.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel logwrap" style="margin: 0 12px 12px 12px;">
+    <h3 style="color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:0.05em;">Event Log</h3>
+    <table id="logTable">
+      <thead>
+        <tr><th>#</th><th>Time</th><th>Category</th><th>Enemy (E,N)</th><th>Reports</th>
+            <th>Range Method</th><th>Range</th><th>Conf</th><th>Disposition</th></tr>
+      </thead>
+      <tbody id="logBody"></tbody>
+    </table>
+  </div>
+
+  <div class="footer">PARALLAX demo &middot; blast+triangulation path only &middot; SIMULATED DATA</div>
+
+  <script src="/judge.js"></script>
+</body>
+</html>
