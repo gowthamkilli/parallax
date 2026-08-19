@@ -4,7 +4,7 @@ Four problems, solved in order:
 
 1. TIME SYNCHRONISATION -- what clock accuracy does the mesh actually need?
 2. ASSOCIATION          -- which reports describe the same physical event?
-3. RANGING              -- where is it, and by which of three methods?
+3. RANGING              -- where is it, and by which of three independent sources?
 4. CONFIDENCE           -- how much should the commander believe the fix?
 
 ------------------------------------------------------------------------
@@ -40,7 +40,7 @@ The design's tolerance to bad sync is a feature, and it exists because of one
 architectural choice, not because of clever engineering.
 
 ------------------------------------------------------------------------
-2. ASSOCIATION: two different windows for two different physics
+2. ASSOCIATION: a different window for each pair of physics
 ------------------------------------------------------------------------
 FLASH <-> ACOUSTIC, SAME NODE. Light covers 400 m in 1.3 ns; sound takes
 1.17 s. So the muzzle flash is, for our purposes, coincident with the shot
@@ -53,6 +53,16 @@ relevance cutoff, 8.75 s. We gate at R_max = 1200 m -> 3.5 s, wide enough to
 catch shots beyond the design envelope without opening the door to unrelated
 events. A negative dt is physically impossible and rejects the pairing
 outright.
+
+SHOCKWAVE <-> ACOUSTIC, SAME NODE. The crack always arrives before the blast
+(it outruns its own gun), bounded by the crack-thump method's own reach
+(MAX_CRACK_THUMP_RANGE_M in parallax/ballistics.py), not the flash/acoustic
+envelope above -- a shockwave this node can detect at all implies a much
+shorter range than the flash/acoustic case ever needs to consider. Critically,
+the crack and the blast are EXPECTED to arrive from noticeably different
+bearings (the split IS the Mach-angle signal), so unlike every other same-node
+pairing this one skips the bearing-agreement check entirely -- see
+_compatible.
 
 ACOUSTIC <-> ACOUSTIC, DIFFERENT NODES. Two nodes separated by baseline B
 hear the same shot at times differing by at most B/c, achieved when the
@@ -72,16 +82,31 @@ carrying an optical and an acoustic report from the same node is one contact
 with two modalities and higher confidence -- never two contacts.
 
 ------------------------------------------------------------------------
-3. RANGING: three methods, ranked, and we never fabricate the fourth
+3. RANGING: THREE INDEPENDENT SOURCES, cross-validated, never picked blind
 ------------------------------------------------------------------------
-    (a) FLASH/ACOUSTIC dt, single node   -- best. R = c * dt.
-    (b) TRIANGULATION, >=2 bearings      -- good, if the crossing angle is.
-    (c) BEARING ONLY                     -- range is NOT reported. The dial
-                                            shows a ray, not a blob.
+    (a) FLASH/ACOUSTIC dt, single node       -- R = c * dt. Needs an optical
+                                                 channel.
+    (b) BALLISTIC CRACK-THUMP, single node   -- R from the shockwave/blast
+                                                 bearing split, timing and
+                                                 N-wave shape (see
+                                                 parallax/ballistics.py). Needs
+                                                 a supersonic round and a
+                                                 SHOCKWAVE + ACOUSTIC pair.
+    (c) TRIANGULATION, >=2 bearings          -- good, if the crossing angle is.
+    (d) BEARING ONLY                          -- range is NOT reported. The
+                                                 dial shows a ray, not a blob.
 
-Method (a) is why adding a cheap IR/optical channel is the highest-value
-change available to this design: it produces a *ranged* fix from ONE node,
-which no amount of acoustic processing on a 30 cm array can do. A single
+The solver is one source of evidence, not the unquestioned truth: whenever
+more than one of (a)/(b)/(c) fires for the same track, _combine_range_estimates
+cross-validates them (Stage 13/21 territory -- don't silently average an
+outlier, and don't silently pick a winner either). If they agree within
+``range_disagreement_sigma`` combined sigma they are fused by inverse-variance
+weighting; if they disagree, the disagreement is recorded explicitly in the
+track's notes and the single tightest estimate is used, never a blend of a
+good and a bad one.
+
+Method (a) or (b) is why a single well-instrumented node can range a shot that
+no amount of acoustic processing on a 30 cm array alone can: a bare
 muzzle-blast bearing carries no range information whatsoever -- amplitude
 depends on weapon, calibre, barrel orientation and terrain, so an
 amplitude-derived range is a guess dressed as a measurement, and we refuse to
@@ -93,6 +118,11 @@ is a 2.6% range error -- 9 m at 350 m. Timestamp jitter of 5 ms contributes
 1.7 m. So the node feeds its measured air temperature into c, and the
 residual temperature uncertainty dominates the error budget. (ESTIMATE:
 +/-3 C residual -> +/-0.5% -> +/-1.8 m at 350 m.)
+
+Accuracy of (b) degrades sharply near Mach 1 (see TRANSONIC_MACH_FLOOR in
+parallax/ballistics.py) and its miss-distance term is inherently the weakest
+of its three outputs (a quarter-power relationship) -- both are surfaced in
+the per-node ballistic solve's own notes, not hidden by the fusion layer.
 
 ------------------------------------------------------------------------
 4. CONFLICTING BEARINGS
@@ -120,6 +150,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .ballistics import (
+    BallisticObservables,
+    DEFAULT_BULLET_LENGTH_M,
+    MAX_CRACK_THUMP_RANGE_M,
+    solve_crack_thump,
+)
 from .contact import (
     ContactReport,
     FusedTrack,
@@ -168,10 +204,18 @@ class FusionConfig:
     max_crossing_cep_m: float = 250.0  # beyond this the "fix" is not a fix
     min_crossing_angle_deg: float = 15.0
     mesh_relevance_m: float = 3000.0
+    bullet_length_m: float = DEFAULT_BULLET_LENGTH_M  # for the ballistic solver
+    range_disagreement_sigma: float = 3.0  # independent range estimates must
+        # agree within this many combined sigma to be fused rather than flagged
     modality_weights: dict = field(
         default_factory=lambda: {
             Modality.OPTICAL_IR: 1.0,
             Modality.ACOUSTIC: 0.85,
+            Modality.SHOCKWAVE: 0.85,  # NOT hardcoded to imply a gunshot by
+                # itself -- it is one physics-supported acoustic modality, and
+                # what actually earns confidence is temporal/spatial agreement
+                # with the blast and other nodes (see _score's corroboration
+                # and _range_from_ballistic_crack_thump's cross-validation).
             Modality.RF_PASSIVE: 0.6,
             Modality.SEISMIC: 0.35,  # confirmation only, never a primary fix
         }
@@ -205,11 +249,20 @@ class FusionEngine:
         cfg = self.config
         same_node = a.node_id == b.node_id
         optical = {a.modality, b.modality} == {Modality.OPTICAL_IR, Modality.ACOUSTIC}
+        shock_thump = {a.modality, b.modality} == {Modality.SHOCKWAVE, Modality.ACOUSTIC}
 
         if same_node and optical:
             # Flash-to-acoustic: bounded by the max range we will consider.
             c = speed_of_sound(self.nodes[a.node_id].temp_c)
             return cfg.max_flash_acoustic_range_m / c + cfg.clock_error_s
+
+        if same_node and shock_thump:
+            # Crack-to-blast: bounded by the crack-thump method's own reach,
+            # not the (much larger) flash/acoustic envelope -- a shockwave
+            # this node can even detect implies the shot is comfortably
+            # inside MAX_CRACK_THUMP_RANGE_M (see parallax/ballistics.py).
+            c = speed_of_sound(self.nodes[a.node_id].temp_c)
+            return MAX_CRACK_THUMP_RANGE_M / c + cfg.clock_error_s
 
         if same_node:
             # Same node, any other modality pairing (incl. same-modality
@@ -246,6 +299,16 @@ class FusionEngine:
             return False
 
         if a.node_id == b.node_id:
+            if {a.modality, b.modality} == {Modality.SHOCKWAVE, Modality.ACOUSTIC}:
+                # The crack and the blast are EXPECTED to arrive from
+                # different bearings -- that split is the Mach-angle signal
+                # the ballistic solver reads speed off of (see
+                # parallax/ballistics.py), not a disagreement to gate on. The
+                # timing window above already does the gating for this pair;
+                # requiring near-equal bearings here would reject every
+                # genuine supersonic shot.
+                return True
+
             # Same node, same OR different modality: still require bearing
             # agreement. Two genuinely distinct events at one node (a rapid
             # double-tap, or two shooters near the same node moments apart)
@@ -335,15 +398,50 @@ class FusionEngine:
         )
         self._next_track_id += 1
 
-        # -- method (a): flash/acoustic dt on a single node ----------------
-        ranged = self._range_from_flash_acoustic(cluster, notes)
-
-        # -- method (b): triangulation from >=2 bearings --------------------
+        # -- three independent range sources, gathered before any are chosen --
+        # method (a): flash/acoustic dt, single node
+        flash_ranged = self._range_from_flash_acoustic(cluster, notes)
+        # method (b): ballistic crack-thump, single node (needs SHOCKWAVE +
+        # ACOUSTIC from the same node -- see parallax/ballistics.py)
+        ballistic_ranged = self._range_from_ballistic_crack_thump(cluster, notes)
+        # method (c): triangulation from >=2 bearings
         fixed = self._triangulate_cluster(cluster, notes)
 
-        primary = max(cluster, key=lambda r: (
-            cfg.modality_weights.get(r.modality, 0.5) * r.class_confidence
-        ))
+        estimates: list[tuple[str, float, float]] = []
+        if flash_ranged is not None:
+            estimates.append(("flash_acoustic_dt", flash_ranged[0], flash_ranged[1]))
+        if ballistic_ranged is not None:
+            estimates.append(("ballistic_crack_thump", ballistic_ranged[0], ballistic_ranged[1]))
+
+        # The crack bearing points at a spot on the bullet's FLIGHT PATH, not
+        # at the shooter -- it must never be picked as the reported bearing.
+        bearing_candidates = [r for r in cluster if r.modality != Modality.SHOCKWAVE]
+        if bearing_candidates:
+            # Primary key: modality-weighted classifier confidence. Two nodes
+            # of the same modality routinely tie on this exactly (same sensor
+            # type, similar confidence) -- e.g. two plain ACOUSTIC reports at
+            # 0.85 each. Without a tiebreak, Python's max() silently keeps
+            # whichever tied report happened to sort first, which can be the
+            # FARTHER, less informative node: the reported "range" is measured
+            # from the primary node, so a bad tiebreak makes an accurate
+            # triangulated position look like a wildly wrong range even though
+            # the position itself is fine. Break ties toward the tighter
+            # (more informative) bearing.
+            shockwave_nodes = {r.node_id for r in cluster if r.modality == Modality.SHOCKWAVE}
+            primary = max(bearing_candidates, key=lambda r: (
+                cfg.modality_weights.get(r.modality, 0.5) * r.class_confidence,
+                -r.azimuth_sigma_deg,
+                1 if r.node_id in shockwave_nodes else 0,  # ballistic-backed wins final ties
+            ))
+        else:
+            # Every report in this cluster is a bare crack with no paired
+            # blast (a physically odd case -- the blast that made it should
+            # also register). Handle it rather than crash, and say so plainly.
+            primary = cluster[0]
+            notes.append(
+                "no blast/optical bearing in this cluster - reporting a crack "
+                "bearing, which is NOT the shooter's true direction"
+            )
         track.primary_node_id = primary.node_id
         track.bearing_deg = primary.azimuth_deg
         track.bearing_sigma_deg = primary.azimuth_sigma_deg
@@ -355,58 +453,140 @@ class FusionEngine:
             track.cep50_m = cep50_from_cov(cov)
             track.ellipse = error_ellipse(cov, n_sigma=1.0)
             node = self.nodes[primary.node_id]
-            track.range_m = float(np.linalg.norm(point - node.enu))
-            track.range_sigma_m = max(track.cep50_m, 1.0)
-            track.range_method = "triangulation"
-            if ranged is not None:
-                # Both methods fired. Prefer the dt range for the *scalar*
-                # range readout (it is tighter) but keep the triangulated
-                # position, and record the disagreement as a health check.
-                dt_range, dt_sigma = ranged
-                disagreement = abs(dt_range - track.range_m)
-                notes.append(
-                    f"dt-range {dt_range:.0f} m vs triangulated {track.range_m:.0f} m "
-                    f"(delta {disagreement:.0f} m)"
-                )
-                if disagreement < 3 * math.hypot(dt_sigma, track.range_sigma_m):
-                    track.range_m, track.range_sigma_m = dt_range, dt_sigma
-                    track.range_method = "flash_acoustic_dt+triangulation"
-                else:
-                    notes.append("METHODS DISAGREE - treat position as suspect")
-        elif ranged is not None:
-            dt_range, dt_sigma = ranged
-            track.range_m, track.range_sigma_m = dt_range, dt_sigma
-            track.range_method = "flash_acoustic_dt"
+            tri_range = float(np.linalg.norm(point - node.enu))
+            tri_sigma = max(track.cep50_m, 1.0)
+            estimates.append(("triangulation", tri_range, tri_sigma))
+
+            combined = self._combine_range_estimates(estimates, notes)
+            track.range_m, track.range_sigma_m, track.range_method = combined
+        elif estimates:
+            combined = self._combine_range_estimates(estimates, notes)
+            range_m, range_sigma_m, method = combined
+            track.range_m, track.range_sigma_m = range_m, range_sigma_m
+            track.range_method = method
+
             node = self.nodes[primary.node_id]
             direction = np.array([
                 math.sin(math.radians(primary.azimuth_deg)),
                 math.cos(math.radians(primary.azimuth_deg)),
             ])
-            point = node.enu + dt_range * direction
+            point = node.enu + range_m * direction
             track.position_enu = tuple(point)
             track.position_latlon = self.frame.to_geodetic(point[0], point[1])
-            # Along-track error is the dt sigma; cross-track is the bearing arc.
-            # Orientation must follow whichever term actually won the max() --
-            # cross-track normally dominates at range (a few degrees of
-            # bearing sigma swamps a few metres of timing sigma), so the
-            # ellipse's long axis is usually PERPENDICULAR to the bearing,
-            # not along it. Hardcoding azimuth_deg as the orientation would
-            # draw the uncertainty rotated 90 degrees from its true shape.
-            cross = dt_range * math.tan(math.radians(primary.azimuth_sigma_deg))
+            # Along-track error is the range sigma; cross-track is the bearing
+            # arc. Orientation must follow whichever term actually won the
+            # max() -- cross-track normally dominates at range (a few degrees
+            # of bearing sigma swamps a few metres of timing/ballistic sigma),
+            # so the ellipse's long axis is usually PERPENDICULAR to the
+            # bearing, not along it. Hardcoding azimuth_deg as the orientation
+            # would draw the uncertainty rotated 90 degrees from its true shape.
+            cross = range_m * math.tan(math.radians(primary.azimuth_sigma_deg))
             along_track_deg = primary.azimuth_deg
             cross_track_deg = (primary.azimuth_deg + 90.0) % 360.0
-            if cross >= dt_sigma:
-                track.ellipse = (cross, dt_sigma, cross_track_deg)
+            if cross >= range_sigma_m:
+                track.ellipse = (cross, range_sigma_m, cross_track_deg)
             else:
-                track.ellipse = (dt_sigma, cross, along_track_deg)
-            track.cep50_m = 1.1774 * math.sqrt(cross * dt_sigma)
+                track.ellipse = (range_sigma_m, cross, along_track_deg)
+            track.cep50_m = 1.1774 * math.sqrt(cross * range_sigma_m)
         else:
             track.range_method = "none"
-            notes.append("BEARING ONLY - single node, no optical pair, no crossing fix")
+            notes.append("BEARING ONLY - single node, no optical/ballistic pair, no crossing fix")
 
         track.confidence = self._score(cluster, track)
         track.notes = notes
         return track
+
+    def _combine_range_estimates(
+        self, estimates: list[tuple[str, float, float]], notes: list[str]
+    ) -> tuple[float, float, str]:
+        """Cross-validate independent range sources; fuse if they agree, flag if not.
+
+        This is the point of carrying three possible range methods instead of
+        picking one: don't silently choose a winner. If every pair of
+        estimates agrees within ``range_disagreement_sigma`` combined sigma,
+        fuse them by inverse-variance weighting -- the source with the
+        tighter uncertainty earns more say, the same principle the bearing
+        triangulation already uses. If any pair disagrees, do NOT average an
+        outlier into the answer: keep the single tightest (lowest-sigma)
+        estimate and record exactly which sources disagreed, so the
+        discrepancy is visible rather than smoothed away.
+        """
+        assert estimates, "_combine_range_estimates called with no estimates"
+        if len(estimates) == 1:
+            name, r, s = estimates[0]
+            return r, s, name
+
+        summary = ", ".join(f"{n}={r:.0f}m(+/-{s:.0f})" for n, r, s in estimates)
+        agree = all(
+            abs(estimates[i][1] - estimates[j][1])
+            <= self.config.range_disagreement_sigma
+            * math.hypot(estimates[i][2], estimates[j][2])
+            for i in range(len(estimates))
+            for j in range(i + 1, len(estimates))
+        )
+
+        if agree:
+            weights = [1.0 / max(s, 1e-6) ** 2 for _, _, s in estimates]
+            total_w = sum(weights)
+            r_fused = sum(w * r for w, (_, r, _) in zip(weights, estimates)) / total_w
+            s_fused = math.sqrt(1.0 / total_w)
+            notes.append(f"range sources agree: {summary} -> fused {r_fused:.0f} +/- {s_fused:.0f} m")
+            return r_fused, s_fused, "+".join(n for n, _, _ in estimates)
+
+        best = min(estimates, key=lambda e: e[2])
+        notes.append(
+            f"RANGE SOURCES DISAGREE: {summary} -> using tightest ({best[0]}), "
+            "treat position as suspect"
+        )
+        return best[1], best[2], best[0]
+
+    def _range_from_ballistic_crack_thump(self, cluster, notes) -> tuple[float, float] | None:
+        """Crack-thump range from any node that reported BOTH a SHOCKWAVE
+        (crack) and an ACOUSTIC (blast) arrival. See parallax/ballistics.py
+        for the physics; this just packages a node's pair of reports into
+        the observables the solver needs and keeps the tightest result.
+        """
+        by_node: dict[int, dict] = {}
+        for report in cluster:
+            by_node.setdefault(report.node_id, {})[report.modality] = report
+
+        best = None
+        for node_id, by_modality in by_node.items():
+            shock = by_modality.get(Modality.SHOCKWAVE)
+            blast = by_modality.get(Modality.ACOUSTIC)
+            if shock is None or blast is None:
+                continue
+
+            dt = (blast.t_event_ns - shock.t_event_ns) * NS
+            if dt <= 0:
+                continue  # crack must arrive before the blast; non-physical otherwise
+
+            obs = BallisticObservables(
+                blast_bearing_deg=blast.azimuth_deg,
+                bearing_split_deg=abs(wrap_deg(blast.azimuth_deg - shock.azimuth_deg)),
+                dt_s=dt,
+                nwave_duration_s=shock.nwave_duration_s,
+                blast_bearing_sigma_deg=blast.azimuth_sigma_deg,
+                bearing_split_sigma_deg=math.hypot(blast.azimuth_sigma_deg, shock.azimuth_sigma_deg),
+                dt_sigma_s=self.config.onset_jitter_s * math.sqrt(2),
+            )
+            temp = self.nodes[node_id].temp_c
+            sol = solve_crack_thump(
+                obs, bullet_length_m=self.config.bullet_length_m,
+                c=speed_of_sound(temp),
+            )
+            if sol.range_m is None:
+                continue
+
+            notes.append(
+                f"node {node_id}: ballistic crack-thump -> {sol.range_m:.0f} m "
+                f"(Mach {sol.mach:.2f}, miss {sol.miss_distance_m:.0f} m, "
+                f"{sol.distance_accuracy_pct:.0f}% accuracy)"
+            )
+            sigma = sol.range_sigma_m if sol.range_sigma_m is not None else max(0.1 * sol.range_m, 5.0)
+            if best is None or sigma < best[1]:
+                best = (sol.range_m, sigma)
+        return best
 
     def _range_from_flash_acoustic(self, cluster, notes) -> tuple[float, float] | None:
         by_node: dict[int, dict] = {}

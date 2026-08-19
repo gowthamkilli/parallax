@@ -1,28 +1,15 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { AO } from '../geo';
-import { bakeTerrainCanvas, heightAt } from './terrainGen';
+import { bakeTerrainCanvas, buildGroundGeometry, GROUND_SEGMENTS, heightAt } from './terrainGen';
 import { useGdsStore } from '../store';
+import { cellAt, type GridCell } from '../data/grid';
 
 const EXTENT = AO.extent_m;
-const SEGMENTS = 160;
 
 export default function Terrain() {
-  const geometry = useMemo(() => {
-    const geo = new THREE.PlaneGeometry(EXTENT, EXTENT, SEGMENTS, SEGMENTS);
-    geo.rotateX(-Math.PI / 2);
-    const pos = geo.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const z = pos.getZ(i);
-      const u = x / EXTENT + 0.5;
-      const v = z / EXTENT + 0.5;
-      pos.setY(i, heightAt(u, v));
-    }
-    geo.computeVertexNormals();
-    return geo;
-  }, []);
+  const geometry = useMemo(() => buildGroundGeometry(EXTENT, GROUND_SEGMENTS), []);
 
   const texture = useMemo(() => {
     const canvas = bakeTerrainCanvas(1024);
@@ -32,20 +19,56 @@ export default function Terrain() {
     return tex;
   }, []);
 
-  const manualMode = useGdsStore((s) => s.manualMode);
-  const fireManual = useGdsStore((s) => s.fireManual);
   const tab = useGdsStore((s) => s.tab);
+  const manualMode = useGdsStore((s) => s.manualMode);
+  const manualPending = useGdsStore((s) => s.manualPending);
+  const fireManualAtCell = useGdsStore((s) => s.fireManualAtCell);
+  const [hovered, setHovered] = useState<GridCell | null>(null);
+
+  // Click/hover handling lives on THIS mesh — the exact one being rendered —
+  // rather than a separate overlay mesh. A separate overlay built with even
+  // slightly different vertex density interpolates the same height function
+  // differently between vertices, so a raycast against it lands at a
+  // different (x,z) than what's visually under the cursor. Raycasting the
+  // rendered surface itself makes that class of bug impossible.
+  const active = tab === 1 && manualMode;
+
+  const handleMove = (e: ThreeEvent<PointerEvent>) => {
+    if (!active) return;
+    e.stopPropagation();
+    setHovered(cellAt(e.point.x, e.point.z));
+  };
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
-    if (!manualMode || tab !== 1) return;
+    if (!active || manualPending) return;
     e.stopPropagation();
-    fireManual(e.point.x, e.point.z);
+    const cell = cellAt(e.point.x, e.point.z);
+    if (cell) fireManualAtCell(cell);
   };
 
   return (
-    <mesh geometry={geometry} receiveShadow onClick={handleClick}>
-      <meshStandardMaterial map={texture} roughness={1} metalness={0} />
-    </mesh>
+    <group>
+      <mesh
+        geometry={geometry}
+        receiveShadow
+        onPointerMove={active ? handleMove : undefined}
+        onPointerOut={active ? () => setHovered(null) : undefined}
+        onClick={active ? handleClick : undefined}
+      >
+        <meshStandardMaterial map={texture} roughness={1} metalness={0} />
+      </mesh>
+
+      {/* hover indicator — where a click will land, no numbers, just a mark */}
+      {active && hovered && (
+        <mesh
+          position={[hovered.east, heightAt(hovered.east / EXTENT + 0.5, hovered.north / EXTENT + 0.5) + 0.8, hovered.north]}
+          rotation={[-Math.PI / 2, 0, 0]}
+        >
+          <ringGeometry args={[6, 8, 32]} />
+          <meshBasicMaterial color="#7fe3b0" transparent opacity={0.7} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+      )}
+    </group>
   );
 }
 

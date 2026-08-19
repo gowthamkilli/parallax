@@ -19,6 +19,10 @@ export interface PresetShot {
   weapon_class?: string;
 
   truth?: { azimuth_deg: number; distance_m: number };
+
+  /** Manual-fire only: whether the localisation came from the real backend
+   *  algorithm or a client-side fallback estimate (backend unreachable). */
+  algorithmSource?: 'backend' | 'client-fallback';
 }
 
 export type NodeId = string;
@@ -60,8 +64,16 @@ export interface ResolvedContact {
   runId: string;
   shot: PresetShot;
   source: ShotSource;
+  /** Where the algorithm's reported fix projects to on the map. */
   east: number;
   north: number;
+  /** Where the shot actually happened (ground truth), when known — same as
+   *  east/north when no truth is available (e.g. an external live feed). The
+   *  gap between the two IS the algorithm's real, computed detection error;
+   *  showing both instead of only the reported point is what makes that
+   *  error legible instead of looking like a misplaced click. */
+  truthEast: number;
+  truthNorth: number;
   resolveTimeS: number;
   firedAtMs: number;
 }
@@ -77,3 +89,17 @@ export interface EventLogRow {
 }
 
 export type TabId = 1 | 2 | 3;
+
+/** Minimal shape needed to forward-simulate sensor readings and fire them
+ *  through the real backend algorithm. GridCell and preset ground-truth
+ *  targets both satisfy this — one pipeline (store.fireGroundTruth) drives
+ *  both, so every reading shown by the dashboard, preset or manual, is
+ *  actually computed by parallax.localize rather than hand-authored. */
+export interface FireTarget {
+  id: string;
+  label: string;
+  east: number;
+  north: number;
+  accuracy_pct: number;
+  weapon_class?: string;
+}

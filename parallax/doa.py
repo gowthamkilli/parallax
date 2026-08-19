@@ -217,6 +217,59 @@ class DoAResult:
     multipath_suspect: bool
     unit_vector: np.ndarray
     n_pairs: int
+    outlier_pair_rejected: bool = False  # see _fit_plane_wave: one bad pair was dropped
+
+
+def _fit_plane_wave(a_mat: np.ndarray, b_vec: np.ndarray, planar: bool,
+                    reject_outlier: bool = True
+                    ) -> tuple[np.ndarray, np.ndarray, bool, int]:
+    """Least-squares plane-wave fit, with one round of outlier-pair rejection.
+
+    Don't trust every correlation peak equally: a single bad pair (a reflection
+    that happened to win that one channel combination, a noisy element) pulls
+    the whole fit toward it. After the first fit, if one pair's residual is a
+    clear outlier against the rest (>4x the RMS of the OTHER pairs) and enough
+    pairs remain to stay comfortably overdetermined, drop that one pair and
+    refit once. Single-pass and bounded on purpose -- this is meant to catch
+    the common "one bad pair" case cheaply, not to iteratively hunt for the
+    best-fitting subset, which would be unbounded work for an FPGA-adjacent
+    path and risks fitting the fit to the noise.
+
+    Returns (u, residual, outlier_rejected, n_pairs_used). ``residual`` is
+    computed over the pairs actually used in the returned fit -- once a pair
+    is judged an outlier it is excluded from the uncertainty estimate too, the
+    same way a rejected triangulation bearing does not drag down the fusion
+    layer's confidence in parallax/fusion.py. Folding the dropped pair's large
+    residual back in would cancel out the entire point of rejecting it.
+    """
+    def fit(a, b):
+        a_solve = a[:, :2] if planar else a
+        solution, *_ = np.linalg.lstsq(a_solve, b, rcond=None)
+        if planar:
+            u = np.array([solution[0], solution[1], 0.0])
+        else:
+            u = np.asarray(solution, dtype=float)
+        norm = np.linalg.norm(u)
+        if norm < 1e-12:
+            raise ValueError("degenerate DoA solution; no coherent wavefront")
+        u = u / norm
+        return u, b - a @ u
+
+    u, residual = fit(a_mat, b_vec)
+
+    n_unknowns = 2 if planar else 3
+    if not reject_outlier or len(b_vec) - 1 < n_unknowns + 3:
+        return u, residual, False, len(b_vec)
+
+    worst = int(np.argmax(np.abs(residual)))
+    rest = np.delete(np.abs(residual), worst)
+    rest_rms = float(np.sqrt(np.mean(np.square(rest)))) if len(rest) else 0.0
+    if rest_rms > 1e-12 and abs(residual[worst]) > 4.0 * rest_rms:
+        keep = np.arange(len(b_vec)) != worst
+        u2, residual2 = fit(a_mat[keep], b_vec[keep])
+        return u2, residual2, True, int(keep.sum())
+
+    return u, residual, False, len(b_vec)
 
 
 def estimate_doa(
@@ -259,23 +312,11 @@ def estimate_doa(
     # z component of u is unconstrained. Solve in the observable subspace only
     # and report elevation as invalid rather than inventing a value.
     planar = geometry.is_planar
-    if planar:
-        a_solve = a_mat[:, :2]
-    else:
-        a_solve = a_mat
 
-    solution, *_ = np.linalg.lstsq(a_solve, b_vec, rcond=None)
-    if planar:
-        u = np.array([solution[0], solution[1], 0.0])
-    else:
-        u = np.asarray(solution, dtype=float)
-
-    norm = np.linalg.norm(u)
-    if norm < 1e-12:
-        raise ValueError("degenerate DoA solution; no coherent wavefront")
-    u = u / norm
-
-    residual = b_vec - a_mat @ u
+    # Fit, with one bounded round of outlier-pair rejection -- see
+    # _fit_plane_wave's docstring for why a single bad correlation peak among
+    # the n*(n-1)/2 pairs must not be allowed to drag the whole bearing.
+    u, residual, outlier_rejected, n_pairs_used = _fit_plane_wave(a_mat, b_vec, planar)
     residual_rms_s = float(np.sqrt(np.mean(np.square(residual))) / c)
 
     # Two independent error sources, combined in quadrature.
@@ -314,7 +355,8 @@ def estimate_doa(
         residual_us=residual_rms_s * 1e6,
         multipath_suspect=bool(sharpness < sharpness_threshold),
         unit_vector=u,
-        n_pairs=len(rows),
+        n_pairs=n_pairs_used,
+        outlier_pair_rejected=outlier_rejected,
     )
 
 

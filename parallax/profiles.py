@@ -77,6 +77,7 @@ PERIMETER = MissionProfile(
         modality_weights={
             Modality.OPTICAL_IR: 1.0,
             Modality.ACOUSTIC: 0.9,
+            Modality.SHOCKWAVE: 0.9,
             Modality.RF_PASSIVE: 0.7,
             Modality.SEISMIC: 0.6,
         },
@@ -101,6 +102,10 @@ CONVOY = MissionProfile(
         modality_weights={
             Modality.OPTICAL_IR: 1.0,
             Modality.ACOUSTIC: 0.7,
+            # A shockwave's sharp N-wave shape survives engine/tyre/wind noise
+            # far better than the blast's lower-frequency energy does, so it
+            # is NOT knocked down the way ACOUSTIC is in this profile.
+            Modality.SHOCKWAVE: 0.85,
             Modality.RF_PASSIVE: 0.6,
             Modality.SEISMIC: 0.0,
         },
@@ -128,6 +133,7 @@ PATROL = MissionProfile(
         modality_weights={
             Modality.OPTICAL_IR: 1.0,
             Modality.ACOUSTIC: 0.9,
+            Modality.SHOCKWAVE: 0.9,
             Modality.RF_PASSIVE: 0.5,
             Modality.SEISMIC: 0.0,
         },
@@ -138,7 +144,10 @@ PATROL = MissionProfile(
     rf_duty_cycle=0.25,
     dashboard_priority=(ThreatClass.GUNSHOT, ThreatClass.PERSONNEL, ThreatClass.DRONE, ThreatClass.VEHICLE),
     bearing_sigma_inflation=1.1,
-    notes="Frequently 1-2 nodes only; depends on flash/acoustic dt for range.",
+    notes=(
+        "Frequently 1-2 nodes only; depends on flash/acoustic dt or ballistic "
+        "crack-thump ranging (parallax/ballistics.py) rather than triangulation."
+    ),
 )
 
 URBAN = MissionProfile(
@@ -152,6 +161,11 @@ URBAN = MissionProfile(
         modality_weights={
             Modality.OPTICAL_IR: 1.0,
             Modality.ACOUSTIC: 0.6,  # least trusted here, by design
+            # A reflected crack is a much sharper anomaly to catch than a
+            # reflected blast (the N-wave shape is distinctive), but a street
+            # canyon can still bounce it, so it is trusted more than the
+            # blast here but not as much as in other profiles.
+            Modality.SHOCKWAVE: 0.7,
             Modality.RF_PASSIVE: 0.7,
             Modality.SEISMIC: 0.0,
         },

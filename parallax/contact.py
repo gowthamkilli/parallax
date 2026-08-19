@@ -29,10 +29,13 @@ WIRE_SIZE = struct.calcsize(_WIRE_FMT)  # 42 bytes
 
 
 class Modality(IntEnum):
-    ACOUSTIC = 0
+    ACOUSTIC = 0       # muzzle blast
     OPTICAL_IR = 1
     RF_PASSIVE = 2
     SEISMIC = 3
+    SHOCKWAVE = 4      # ballistic crack -- distinct from the blast on purpose;
+                       # see parallax/ballistics.py for why the two arrivals
+                       # from one node are worth more together than either alone
 
 
 class ThreatClass(IntEnum):
@@ -78,6 +81,15 @@ class ContactReport:
     node_alt_m: float = 0.0
     node_heading_deg: float = 0.0
     flags: int = 0
+    # SHOCKWAVE-modality reports only: the N-wave's positive-phase duration T,
+    # the observable parallax.ballistics needs to recover miss distance. This
+    # field is carried in the in-memory / JSON ContactReport only -- it is NOT
+    # in the 42-byte wire record below. The wire format has no spare capacity
+    # (every byte is already assigned; see the struct layout above), so
+    # transmitting T over the real mesh needs either 2 more bytes or reuse of
+    # the always-zero range_sigma_m field on SHOCKWAVE reports specifically.
+    # Left as an explicit gap rather than silently growing the packet.
+    nwave_duration_s: float = 0.0
 
     def to_bytes(self) -> bytes:
         """Serialise to the 42-byte wire record (with CRC-16/CCITT)."""
@@ -136,7 +148,10 @@ class FusedTrack:
     bearing_sigma_deg: float | None = None
     range_m: float | None = None
     range_sigma_m: float | None = None
-    range_method: str = "none"  # flash_acoustic_dt | triangulation | none
+    range_method: str = "none"
+    # "+"-joined tags naming every range source that agreed and was combined,
+    # e.g. "ballistic_crack_thump+triangulation", or "none" for bearing-only.
+    # Individual tags: flash_acoustic_dt | ballistic_crack_thump | triangulation
     modalities: tuple = ()
     notes: list = field(default_factory=list)
 

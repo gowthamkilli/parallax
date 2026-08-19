@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { PresetShot } from '../types';
 
 const RINGS = [100, 200, 300, 400];
@@ -25,12 +25,24 @@ interface Ghost {
 }
 
 export default function RadarPlot({ shot, ghosts }: { shot: PresetShot | null; ghosts: Ghost[] }) {
-  const [sweep, setSweep] = useState(0);
+  // The sweep used to live in React state, re-rendering this whole SVG
+  // (rings, wedge, ghosts, needle) 60x/sec for a single rotating line — one
+  // of the sources of Tab 2 feeling janky. Drive it by mutating the <line>
+  // element directly instead; nothing else in this component needs to
+  // re-render on every animation frame.
+  const sweepRef = useRef<SVGLineElement>(null);
+
   useEffect(() => {
     let raf: number;
     const start = performance.now();
     const tick = (t: number) => {
-      setSweep(((t - start) / 4000) * 360);
+      const sweep = ((t - start) / 4000) * 360;
+      const rad = ((sweep - 90) * Math.PI) / 180;
+      const line = sweepRef.current;
+      if (line) {
+        line.setAttribute('x2', String(CX + Math.cos(rad) * R));
+        line.setAttribute('y2', String(CY + Math.sin(rad) * R));
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -76,14 +88,7 @@ export default function RadarPlot({ shot, ghosts }: { shot: PresetShot | null; g
 
       {/* sweep */}
       <g opacity="0.5">
-        <line
-          x1={CX}
-          y1={CY}
-          x2={CX + Math.cos(((sweep - 90) * Math.PI) / 180) * R}
-          y2={CY + Math.sin(((sweep - 90) * Math.PI) / 180) * R}
-          stroke="var(--friendly)"
-          strokeWidth="1"
-        />
+        <line ref={sweepRef} x1={CX} y1={CY} x2={CX} y2={CY - R} stroke="var(--friendly)" strokeWidth="1" />
       </g>
 
       {/* ghosts */}

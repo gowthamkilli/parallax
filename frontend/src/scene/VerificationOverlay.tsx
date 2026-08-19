@@ -98,19 +98,58 @@ export default function VerificationOverlay() {
     <group>
       <primitive object={grid} position={[0, 0.3, 0]} />
 
-      {/* reticles */}
+      {/* reticles — labelled, because Tab 3's camera is wide enough to show
+          several units at once, and an unlabelled reticle reads as "must be
+          whichever unit is nearby" when it's actually a specific named node
+          that may belong to a different unit entirely */}
       <group position={[node.east, nodeY, node.north]} scale={progress.reticle}>
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
           <ringGeometry args={[6, 7, 4]} />
           <meshBasicMaterial color="#ff3b30" />
         </mesh>
       </group>
+      {progress.reticle > 0.5 && (
+        <Html position={[node.east, nodeY, node.north]} center zIndexRange={[16, 0]}>
+          <div
+            className="label font-mono"
+            style={{ color: 'var(--hud-line)', fontSize: 10, whiteSpace: 'nowrap', textShadow: '0 1px 2px #000', transform: 'translateY(-16px)' }}
+          >
+            {node.id} · REF NODE
+          </div>
+        </Html>
+      )}
       <group position={[contact.east, targetY, contact.north]} scale={progress.reticle}>
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
           <ringGeometry args={[6, 7, 4]} />
           <meshBasicMaterial color="#ff3b30" />
         </mesh>
       </group>
+      {progress.reticle > 0.5 && (
+        <Html position={[contact.east, targetY, contact.north]} center zIndexRange={[16, 0]}>
+          <div
+            className="label font-mono"
+            style={{ color: 'var(--hostile)', fontSize: 10, whiteSpace: 'nowrap', textShadow: '0 1px 2px #000', transform: 'translateY(16px)' }}
+          >
+            REPORTED FIX
+          </div>
+        </Html>
+      )}
+
+      {/* True shot location, when known. Deliberately NOT another red
+          diamond — the node and target reticles above are already that
+          shape/colour, and a third one reads as "which is which?" rather
+          than "here's the true point". Amber X matches the same mark used
+          on Tab 1 for the same concept. */}
+      {progress.reticle > 0.5 && (
+        <group
+          position={[contact.truthEast, groundY(contact.truthEast, contact.truthNorth) + 1, contact.truthNorth]}
+          rotation={[-Math.PI / 2, 0, 0]}
+          scale={progress.reticle}
+        >
+          <Line points={[[-5, -5, 0], [5, 5, 0]]} color="#ffb627" lineWidth={2} />
+          <Line points={[[-5, 5, 0], [5, -5, 0]]} color="#ffb627" lineWidth={2} />
+        </group>
+      )}
 
       {/* measurement line */}
       {progress.measure > 0.01 && (

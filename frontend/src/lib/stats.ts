@@ -1,6 +1,4 @@
 import type { ResolvedContact } from '../types';
-import { nodeById } from '../data/layout';
-import { projectBearing } from '../geo';
 
 function angDelta(a: number, b: number): number {
   let d = a - b;
@@ -40,12 +38,7 @@ export function computeSessionStats(contacts: ResolvedContact[]): SessionStats {
     const rangeErrors = withTruth.map(
       (c) => (Math.abs(c.shot.distance_m - c.shot.truth!.distance_m) / c.shot.truth!.distance_m) * 100
     );
-    const posErrors = withTruth.map((c) => {
-      const node = nodeById(c.shot.detecting_node);
-      if (!node) return 0;
-      const truePos = projectBearing(node.east, node.north, c.shot.truth!.azimuth_deg, c.shot.truth!.distance_m);
-      return Math.hypot(truePos.east - c.east, truePos.north - c.north);
-    });
+    const posErrors = withTruth.map((c) => Math.hypot(c.truthEast - c.east, c.truthNorth - c.north));
     meanBearingError = bearingErrors.reduce((a, b) => a + b, 0) / bearingErrors.length;
     meanRangeErrorPct = rangeErrors.reduce((a, b) => a + b, 0) / rangeErrors.length;
     const sorted = [...posErrors].sort((a, b) => a - b);

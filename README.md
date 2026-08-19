@@ -46,7 +46,26 @@ python -m sim.run_demo --profile patrol --range 350 --bearing 35
 
 # render the C2 dashboard from the demo's output
 python -m viz.radar out/tracks.json --save out/dashboard.png
+
+# crack-thump ballistic backend: single-node range/direction/speed from the
+# shockwave + muzzle blast, both field scenarios, and the HQ relay
+python -m sim.run_ballistic_demo --range 300 --miss 10 --velocity 700
+
+# train the BINARY gunshot/not-gunshot gate (reports FPR, FNR, ROC-AUC)
+python -m sim.train_gunshot_detector
+
+# gated pipeline: audio -> "is it a gunshot?" -> direction + range
+python -m sim.run_detect_demo --range 300 --miss 10
 ```
+
+### Crack-thump ballistic ranging (new backend)
+
+A single node that hears both the ballistic **crack** (supersonic shockwave) and
+the muzzle **thump** can recover the shooter's range, the bullet's speed, and the
+miss distance at once — with no assumption about the weapon or ammunition. This
+is the flagship single-node ranging engine and it is fully JSON-ready for the
+(future) JavaScript front end. See [docs/07-crack-thump-backend.md](docs/07-crack-thump-backend.md)
+for the physics, the module map, and the API contract.
 
 ### Try the failure modes on purpose
 

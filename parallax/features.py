@@ -54,6 +54,19 @@ FEATURE_NAMES = [
     "energy_entropy",
     "harmonicity",  # separates tonal (drone, engine) from impulsive
     "modulation_20_200hz",  # blade-pass / cylinder-firing periodicity
+    # -- N-wave shape, measured at the pulse's OWN timescale ----------------
+    # These three exist to separate a ballistic shockwave from a firecracker,
+    # which the features above do not do well: both are short, impulsive and
+    # high-frequency. The physical difference is shape. A shockwave is an
+    # N-wave -- a positive spike, a near-LINEAR ramp down through zero, and a
+    # negative lobe of comparable magnitude. A blast or firecracker is a
+    # Friedlander-ish pulse: a positive spike with EXPONENTIAL decay and a
+    # shallow negative phase. Crucially these are measured over the ~100-600 us
+    # the pulse actually occupies, not over the 20 ms window `decay_linearity`
+    # uses, which is ~40x too long to see the shape at all.
+    "nwave_symmetry",  # |negative lobe| / positive lobe; ~1 for an N-wave
+    "nwave_ramp_linearity",  # R^2 of a straight-line fit peak -> trough
+    "nwave_bipolar_ms",  # positive-peak to negative-trough time
 ]
 
 
@@ -187,10 +200,64 @@ def extract(x: np.ndarray, fs: float) -> np.ndarray:
     m = (env_ac_f >= 20) & (env_ac_f <= 200)
     modulation = float(env_psd[m].sum() / (env_psd.sum() + 1e-20))
 
+    symmetry, ramp_linearity, bipolar_ms = _nwave_shape(xn, fs)
+
     return np.array([
         rise_time, decay_time, duration, crest, kurtosis, skewness, zcr,
         centroid, spread, rolloff, flatness, spectral_slope,
         band_lo, band_mid, band_hi, band_vhi,
         onset_slope, decay_linearity, n_secondary, secondary_ratio,
         temporal_centroid, entropy, harmonicity, modulation,
+        symmetry, ramp_linearity, bipolar_ms,
     ], dtype=float)
+
+
+def _nwave_shape(xn: np.ndarray, fs: float,
+                 max_bipolar_s: float = 0.0015) -> tuple[float, float, float]:
+    """Measure the N-wave signature on the RAW pulse, at its own timescale.
+
+    Locates the largest positive excursion and the deepest negative trough that
+    follows it within ``max_bipolar_s`` (1.5 ms covers small-arms N-waves with
+    margin), then reports:
+
+        symmetry        |trough| / peak      -- ~1 for an N-wave, << 1 for a
+                                                blast's shallow negative phase
+        ramp_linearity  R^2 of a straight line fitted peak -> trough. An
+                        N-wave's ramp is near-linear (R^2 -> 1); an exponential
+                        decay fits a straight line poorly.
+        bipolar_ms      peak-to-trough time, i.e. roughly half the N-wave
+                        duration T. Directly related to the Whitham observable.
+
+    Returns zeros when no usable bipolar structure exists (tonal or noise-like
+    inputs), which is itself informative -- a drone has no N-wave.
+    """
+    peak_idx = int(np.argmax(xn))
+    if xn[peak_idx] <= 1e-9:
+        return 0.0, 0.0, 0.0
+
+    span = max(int(max_bipolar_s * fs), 4)
+    tail = xn[peak_idx:peak_idx + span]
+    if len(tail) < 4:
+        return 0.0, 0.0, 0.0
+
+    trough_rel = int(np.argmin(tail))
+    if trough_rel < 2:
+        return 0.0, 0.0, 0.0
+
+    peak_val = float(xn[peak_idx])
+    trough_val = float(tail[trough_rel])
+    if trough_val >= 0.0:
+        # No negative lobe at all: not an N-wave.
+        return 0.0, 0.0, float(trough_rel * 1000.0 / fs)
+
+    symmetry = float(np.clip(abs(trough_val) / (peak_val + 1e-12), 0.0, 4.0))
+
+    ramp = tail[: trough_rel + 1]
+    t = np.arange(len(ramp))
+    slope, intercept = np.polyfit(t, ramp, 1)
+    pred = slope * t + intercept
+    ss_res = float(np.sum((ramp - pred) ** 2))
+    ss_tot = float(np.sum((ramp - ramp.mean()) ** 2)) + 1e-12
+    ramp_linearity = float(np.clip(1.0 - ss_res / ss_tot, 0.0, 1.0))
+
+    return symmetry, ramp_linearity, float(trough_rel * 1000.0 / fs)

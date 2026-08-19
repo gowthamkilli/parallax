@@ -57,6 +57,31 @@ def wrap_deg(delta: float) -> float:
     return (delta + 180.0) % 360.0 - 180.0
 
 
+def compass_bearing(azimuth_deg: float) -> str:
+    """0..360 compass azimuth -> quadrant bearing, e.g. "N42.0E", "S8.3W".
+
+    The classic surveying/navigation notation: which quadrant (NE/SE/SW/NW)
+    plus how many degrees off the nearer of N/S, rather than a raw 0-360
+    number. The four cardinal points print bare (N/E/S/W).
+    """
+    d = azimuth_deg % 360.0
+    if d == 0.0:
+        return "N"
+    if d == 90.0:
+        return "E"
+    if d == 180.0:
+        return "S"
+    if d == 270.0:
+        return "W"
+    if d < 90.0:
+        return f"N{d:.1f}E"
+    if d < 180.0:
+        return f"S{180.0 - d:.1f}E"
+    if d < 270.0:
+        return f"S{d - 180.0:.1f}W"
+    return f"N{360.0 - d:.1f}W"
+
+
 def bearing_between(origin: np.ndarray, target: np.ndarray) -> float:
     """Compass azimuth from origin to target, both ENU."""
     d = np.asarray(target, dtype=float) - np.asarray(origin, dtype=float)

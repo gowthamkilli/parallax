@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useGdsStore } from '../store';
+import { PRESET_TARGETS } from '../data/presets';
 
 function TickLadder({ orientation, style }: { orientation: 'v' | 'h'; style: React.CSSProperties }) {
   const ticks = Array.from({ length: 14 });
@@ -38,12 +39,10 @@ function CornerBrackets() {
 }
 
 export default function Tab1Hud() {
-  const presets = useGdsStore((s) => s.presets);
-  const fireShot = useGdsStore((s) => s.fireShot);
   const manualMode = useGdsStore((s) => s.manualMode);
   const setManualMode = useGdsStore((s) => s.setManualMode);
-  const selectedPresetIdx = useGdsStore((s) => s.selectedPresetIdx);
-  const setSelectedPresetIdx = useGdsStore((s) => s.setSelectedPresetIdx);
+  const backendOnline = useGdsStore((s) => s.backendOnline);
+  const manualPending = useGdsStore((s) => s.manualPending);
   const [clock, setClock] = useState(new Date());
 
   useEffect(() => {
@@ -74,12 +73,15 @@ export default function Tab1Hud() {
 
       {/* center-top altitude readout */}
       <div className="label font-mono" style={{ position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)', fontSize: 13 }}>
-        AO {`—`} {presets.length} CONTACTS PRESET
+        AO {`—`} {PRESET_TARGETS.length} CONTACTS PRESET
       </div>
 
       {/* top-right */}
       <div className="label font-mono" style={{ position: 'absolute', top: 20, right: 20, fontSize: 13, textAlign: 'right' }}>
         SENSOR NET · 9 NODES ONLINE
+        <div style={{ fontSize: 10, marginTop: 2, color: backendOnline ? 'var(--friendly)' : backendOnline === false ? 'var(--hostile)' : 'var(--hud-dim)' }}>
+          ALGORITHM {backendOnline ? 'ONLINE' : backendOnline === false ? 'OFFLINE — CLIENT FALLBACK' : 'CHECKING…'}
+        </div>
       </div>
 
       <TickLadder orientation="v" style={{ left: 6, top: '20%', height: '55%' }} />
@@ -108,51 +110,12 @@ export default function Tab1Hud() {
             cursor: 'pointer',
           }}
         >
-          {manualMode ? 'MANUAL — CLICK TERRAIN TO PLACE' : 'MANUAL MODE [M]'}
+          {manualPending
+            ? 'SOLVING…'
+            : manualMode
+              ? 'MANUAL — CLICK A GRID CELL TO FIRE'
+              : 'MANUAL MODE [M]'}
         </button>
-      </div>
-
-      {/* preset tray */}
-      <div
-        className="font-mono"
-        style={{
-          position: 'absolute',
-          bottom: 16,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          display: 'flex',
-          gap: 4,
-          maxWidth: '92vw',
-          overflowX: 'auto',
-          pointerEvents: 'auto',
-          background: 'var(--panel)',
-          padding: 6,
-          border: '1px solid var(--hud-dim)',
-        }}
-      >
-        {presets.map((p, i) => (
-          <button
-            key={p.id}
-            onClick={() => {
-              setSelectedPresetIdx(i);
-              fireShot(p);
-            }}
-            style={{
-              background: 'transparent',
-              color: 'var(--hud-line)',
-              border: selectedPresetIdx === i ? '1px solid var(--friendly)' : '1px solid var(--hud-dim)',
-              padding: '6px 10px',
-              fontSize: 11,
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-              textAlign: 'left',
-            }}
-            title={p.label}
-          >
-            <div style={{ color: 'var(--friendly)' }}>{i < 9 ? `[${i + 1}]` : ''} {p.id}</div>
-            <div style={{ color: 'var(--hud-dim)', fontSize: 10 }}>{p.label}</div>
-          </button>
-        ))}
       </div>
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.2} }`}</style>

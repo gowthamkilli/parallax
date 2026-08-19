@@ -19,7 +19,7 @@ from parallax.contact import (
     crc16_ccitt,
 )
 from parallax.fusion import FusionConfig, FusionEngine, NodeState, speed_of_sound
-from parallax.geometry import LocalFrame, bearing_between, triangulate
+from parallax.geometry import LocalFrame, bearing_between, compass_bearing, triangulate
 
 ORIGIN = LocalFrame(28.6139, 77.2090)
 T0 = 1_700_000_000_000_000_000
@@ -84,6 +84,18 @@ def test_triangulation_recovers_known_point():
 def test_triangulation_rejects_parallel_bearings():
     with pytest.raises(np.linalg.LinAlgError):
         triangulate(np.array([[0.0, 0.0], [100.0, 0.0]]), np.array([10.0, 10.0]))
+
+
+def test_compass_bearing_quadrant_notation():
+    assert compass_bearing(0.0) == "N"
+    assert compass_bearing(90.0) == "E"
+    assert compass_bearing(180.0) == "S"
+    assert compass_bearing(270.0) == "W"
+    assert compass_bearing(42.0) == "N42.0E"
+    assert compass_bearing(135.0) == "S45.0E"
+    assert compass_bearing(210.0) == "S30.0W"
+    assert compass_bearing(315.0) == "N45.0W"
+    assert compass_bearing(360.0) == "N"  # wraps
 
 
 # ---------------------------------------------------------------- ranging
@@ -244,3 +256,101 @@ def test_confidence_rises_with_corroboration():
         _report(1, (0, 0), truth, Modality.ACOUSTIC, dt_ns=dt_ns),
     ])[0].confidence
     assert both > acoustic_only
+
+
+# --------------------------------------------------- ballistic crack-thump fusion
+def _shock_and_blast(node_id, node_enu, blast_bearing_deg, range_m, miss_m, mach,
+                     seq0=1):
+    """One node's SHOCKWAVE + ACOUSTIC report pair for a physically consistent
+    supersonic shot, built the same way parallax.ballistics.forward_observables
+    is validated against in tests/test_ballistics.py."""
+    from parallax.ballistics import forward_observables, DEFAULT_BULLET_LENGTH_M
+
+    fwd = forward_observables(range_m, miss_m, mach, bullet_length_m=DEFAULT_BULLET_LENGTH_M,
+                              c=speed_of_sound(20.0))
+    crack_bearing = blast_bearing_deg - fwd["bearing_split_deg"]
+    lat, lon = ORIGIN.to_geodetic(*node_enu)
+
+    shock = ContactReport(
+        node_id=node_id, seq=seq0, t_event_ns=T0, modality=Modality.SHOCKWAVE,
+        threat_class=ThreatClass.GUNSHOT, class_confidence=0.80,
+        azimuth_deg=crack_bearing % 360.0, azimuth_sigma_deg=1.0,
+        nwave_duration_s=fwd["nwave_duration_s"],
+        node_lat=lat, node_lon=lon, flags=FLAG_GPS_LOCKED,
+    )
+    blast = ContactReport(
+        node_id=node_id, seq=seq0 + 1, t_event_ns=T0 + int(round(fwd["dt_s"] * 1e9)),
+        modality=Modality.ACOUSTIC, threat_class=ThreatClass.GUNSHOT,
+        class_confidence=0.85, azimuth_deg=blast_bearing_deg % 360.0,
+        azimuth_sigma_deg=1.0, node_lat=lat, node_lon=lon, flags=FLAG_GPS_LOCKED,
+    )
+    return shock, blast
+
+
+def test_shockwave_and_blast_same_node_produce_ballistic_range():
+    """A single node hearing both the crack and the blast should range the
+    shot via parallax.ballistics -- the whole point of carrying SHOCKWAVE as
+    its own modality instead of folding it into ACOUSTIC."""
+    shock, blast = _shock_and_blast(1, (0.0, 0.0), blast_bearing_deg=42.0,
+                                    range_m=300.0, miss_m=10.0, mach=2.04)
+    engine = FusionEngine(_nodes((0.0, 0.0)), ORIGIN)
+    tracks = engine.process([shock, blast])
+
+    assert len(tracks) == 1, "the crack and its own blast must not double-count"
+    track = tracks[0]
+    assert track.range_method == "ballistic_crack_thump"
+    assert track.range_m == pytest.approx(300.0, rel=0.15)
+    # The reported bearing must be the BLAST bearing, never the crack bearing
+    # -- the crack points at a spot on the flight path, not at the shooter.
+    assert track.bearing_deg == pytest.approx(42.0, abs=0.5)
+    assert set(track.modalities) == {"SHOCKWAVE", "ACOUSTIC"}
+
+
+def test_ballistic_and_triangulation_agree_and_fuse():
+    """Two nodes triangulate a position; one of them also has a crack-thump
+    range. If the two independent range sources agree, they should combine
+    into a tighter fused range, not just pick one and discard the other."""
+    node_a, node_b = (0.0, 0.0), (600.0, 0.0)
+    truth = np.array([300.0, 400.0])
+    shock, blast_a = _shock_and_blast(
+        1, node_a, blast_bearing_deg=bearing_between(np.array(node_a), truth),
+        range_m=float(np.linalg.norm(truth - np.array(node_a))),
+        miss_m=8.0, mach=2.2,
+    )
+    blast_b = _report(2, node_b, truth, Modality.ACOUSTIC, sigma=1.0)
+
+    engine = FusionEngine(_nodes(node_a, node_b), ORIGIN)
+    tracks = engine.process([shock, blast_a, blast_b])
+
+    assert len(tracks) == 1
+    track = tracks[0]
+    assert "ballistic_crack_thump" in track.range_method
+    assert "triangulation" in track.range_method
+    assert track.range_m == pytest.approx(float(np.linalg.norm(truth - np.array(node_a))), rel=0.2)
+    assert any("range sources agree" in n for n in track.notes)
+
+
+def test_ballistic_and_triangulation_disagreement_is_flagged():
+    """If the ballistic range and the triangulated range land far apart, the
+    engine must not silently average them -- it should say so and fall back
+    to the tighter single estimate."""
+    node_a, node_b = (0.0, 0.0), (600.0, 0.0)
+    truth = np.array([300.0, 400.0])
+    # A ballistic pair consistent with a totally different, much closer shot
+    # at the SAME bearing as the real triangulated shooter -- an internally
+    # self-consistent crack/blast pair that nonetheless disagrees with what
+    # the two-node triangulation independently finds.
+    bearing = bearing_between(np.array(node_a), truth)
+    shock, blast_a = _shock_and_blast(
+        1, node_a, blast_bearing_deg=bearing, range_m=60.0, miss_m=2.0, mach=2.2,
+    )
+    blast_b = _report(2, node_b, truth, Modality.ACOUSTIC, sigma=1.0)
+
+    engine = FusionEngine(_nodes(node_a, node_b), ORIGIN)
+    tracks = engine.process([shock, blast_a, blast_b])
+
+    assert len(tracks) == 1
+    track = tracks[0]
+    assert any("DISAGREE" in n for n in track.notes)
+    # Falls back to ONE tightest source, not a "+"-joined fused label.
+    assert "+" not in track.range_method

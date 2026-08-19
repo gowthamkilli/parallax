@@ -1,9 +1,11 @@
 import { create } from 'zustand';
-import type { PresetShot, ResolvedContact, EventLogRow, TabId, ShotSource } from './types';
-import { PRESETS } from './data/presets';
-import { AO, projectBearing, compassBearing } from './geo';
-import { nodeById, nearestNodes } from './data/layout';
+import type { PresetShot, ResolvedContact, EventLogRow, TabId, ShotSource, FireTarget } from './types';
+import { PRESET_TARGETS } from './data/presets';
+import { projectBearing, parseCompassBearing, compassBearing, toLatLon } from './geo';
+import { nodeById } from './data/layout';
 import { playPing } from './lib/audio';
+import { simulateNodeReports } from './lib/forwardSim';
+import { solveNetwork } from './lib/backend';
 
 export type ShotStage = 'idle' | 'flash' | 'wavefront' | 'converge' | 'resolved';
 
@@ -13,8 +15,16 @@ export interface ActiveShot {
   source: ShotSource;
   originEast: number;
   originNorth: number;
+  /** Where the algorithm's reported fix projects to — the wavefront's
+   *  convergence lines and the final marker land here. */
   targetEast: number;
   targetNorth: number;
+  /** Where the shot actually happened — the muzzle flash, the expanding
+   *  wavefront ring, and node-latch timing all originate here, since that's
+   *  the physical event the sensors are detecting. Equal to targetEast/North
+   *  when no ground truth is known (e.g. an external live feed). */
+  truthEast: number;
+  truthNorth: number;
   firedAtMs: number;
   stage: ShotStage;
   latched: string[]; // node ids that have latched the wavefront, in order
@@ -32,11 +42,16 @@ interface GdsState {
   reducedMotion: boolean;
   verificationIdx: number; // index into contacts, for tab 3 stepper
   audioEnabled: boolean;
+  backendOnline: boolean | null; // null = not checked yet
+  manualPending: boolean; // waiting on the backend for a manual-fire result
 
   loadPresets: (shots: PresetShot[]) => void;
   setTab: (t: TabId) => void;
   fireShot: (shot: PresetShot, source?: ShotSource) => void;
-  fireManual: (east: number, north: number) => void;
+  fireGroundTruth: (target: FireTarget, source: ShotSource) => Promise<void>;
+  fireManualAtCell: (target: FireTarget) => Promise<void>;
+  firePresetAtIndex: (idx: number) => Promise<void>;
+  setBackendOnline: (v: boolean) => void;
   advanceShotStage: (stage: ShotStage, latchedNode?: string) => void;
   resolveShot: (resolveTimeS: number) => void;
   clearActiveShot: () => void;
@@ -51,7 +66,7 @@ interface GdsState {
 let runCounter = 0;
 
 export const useGdsStore = create<GdsState>((set, get) => ({
-  presets: PRESETS,
+  presets: [],
   tab: 1,
   selectedPresetIdx: 0,
   activeShot: null,
@@ -65,6 +80,8 @@ export const useGdsStore = create<GdsState>((set, get) => ({
       : false,
   verificationIdx: -1,
   audioEnabled: true,
+  backendOnline: null,
+  manualPending: false,
 
   loadPresets: (shots) => set({ presets: shots }),
 
@@ -75,6 +92,9 @@ export const useGdsStore = create<GdsState>((set, get) => ({
     const originEast = node ? node.east : 0;
     const originNorth = node ? node.north : 0;
     const target = projectBearing(originEast, originNorth, shot.azimuth_deg, shot.distance_m);
+    const truthTarget = shot.truth
+      ? projectBearing(originEast, originNorth, shot.truth.azimuth_deg, shot.truth.distance_m)
+      : target;
     runCounter += 1;
     set({
       activeShot: {
@@ -85,6 +105,8 @@ export const useGdsStore = create<GdsState>((set, get) => ({
         originNorth,
         targetEast: target.east,
         targetNorth: target.north,
+        truthEast: truthTarget.east,
+        truthNorth: truthTarget.north,
         firedAtMs: performance.now(),
         stage: 'flash',
         latched: [],
@@ -92,33 +114,75 @@ export const useGdsStore = create<GdsState>((set, get) => ({
     });
   },
 
-  fireManual: (east, north) => {
-    const nearest = nearestNodes(east, north, 3);
-    const ref = nearest[0];
-    const dx = east - ref.east;
-    const dy = north - ref.north;
-    const distance_m = Math.sqrt(dx * dx + dy * dy);
-    const azimuth_deg = (Math.atan2(dx, dy) * 180) / Math.PI;
-    const az = ((azimuth_deg % 360) + 360) % 360;
-    const M = 111320;
-    const latitude = AO.anchor_lat + north / M;
-    const longitude = AO.anchor_lon + east / (M * Math.cos((AO.anchor_lat * Math.PI) / 180));
-    const shot: PresetShot = {
-      id: `SIM-${runCounter + 1}`,
-      label: 'MANUAL PLACEMENT',
-      direction: compassBearing(az),
-      azimuth_deg: az,
-      distance_m,
-      latitude,
-      longitude,
-      confidence_pct: 62 + Math.random() * 20,
-      detecting_node: ref.id,
-      contributing_nodes: nearest.map((n) => n.id),
-      snr_db: 8 + Math.random() * 10,
-      weapon_class: 'UNCLASSIFIED',
+  // Shared by manual grid clicks AND the local preset library: simulate what
+  // the sensor net would have measured for a ground-truth position, solve it
+  // with the real backend algorithm, and fire whatever it returns. Nothing
+  // displayed here is authored — the backend's output IS the reading, noise
+  // and all. Falls back to a clearly-tagged client estimate only if the
+  // backend is unreachable.
+  fireGroundTruth: async (target, source) => {
+    set({ manualPending: true });
+    const { reports, contributing, sigmaDeg } = simulateNodeReports(target);
+    const result = await solveNetwork(reports);
+    set({ manualPending: false, backendOnline: result.reachable });
+
+    const refNode = contributing[0];
+    const dx = target.east - refNode.east;
+    const dy = target.north - refNode.north;
+    const trueDistance = Math.hypot(dx, dy);
+    const trueAzimuth = (((Math.atan2(dx, dy) * 180) / Math.PI) % 360 + 360) % 360;
+    const truth = { azimuth_deg: trueAzimuth, distance_m: trueDistance };
+
+    const baseFields = {
+      id: target.id,
+      label: target.label,
+      detecting_node: refNode.id,
+      contributing_nodes: contributing.map((n) => n.id),
+      snr_db: Math.max(4, 22 - sigmaDeg * 1.4),
+      weapon_class: target.weapon_class ?? 'UNCLASSIFIED',
+      truth,
     };
-    get().fireShot(shot, 'manual');
+
+    const fix = result.ok ? result.fix : null;
+    let shot: PresetShot;
+    if (fix && fix.latitude !== null && fix.longitude !== null) {
+      shot = {
+        ...baseFields,
+        direction: fix.direction,
+        azimuth_deg: parseCompassBearing(fix.direction),
+        distance_m: fix.range_m ?? trueDistance,
+        latitude: fix.latitude,
+        longitude: fix.longitude,
+        confidence_pct: fix.accuracy_pct,
+        algorithmSource: 'backend',
+      };
+    } else {
+      // Backend unreachable or couldn't resolve a fix — fall back to a
+      // clearly-tagged client-side estimate so the demo never dead-ends.
+      const { latitude, longitude } = toLatLon(target.east, target.north);
+      shot = {
+        ...baseFields,
+        direction: compassBearing(trueAzimuth),
+        azimuth_deg: trueAzimuth,
+        distance_m: trueDistance,
+        latitude,
+        longitude,
+        confidence_pct: Math.max(10, target.accuracy_pct * 0.7),
+        algorithmSource: 'client-fallback',
+      };
+    }
+    get().fireShot(shot, source);
   },
+
+  fireManualAtCell: (target) => get().fireGroundTruth(target, 'manual'),
+
+  firePresetAtIndex: (idx) => {
+    const target = PRESET_TARGETS[idx];
+    if (!target) return Promise.resolve();
+    return get().fireGroundTruth(target, 'preset');
+  },
+
+  setBackendOnline: (v) => set({ backendOnline: v }),
 
   advanceShotStage: (stage, latchedNode) =>
     set((s) => {
@@ -139,6 +203,8 @@ export const useGdsStore = create<GdsState>((set, get) => ({
         source: a.source,
         east: a.targetEast,
         north: a.targetNorth,
+        truthEast: a.truthEast,
+        truthNorth: a.truthNorth,
         resolveTimeS,
         firedAtMs: a.firedAtMs,
       };

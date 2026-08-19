@@ -1,8 +1,19 @@
 import { Html } from '@react-three/drei';
 import { useGdsStore } from '../store';
 import { groundY } from './UnitsLayer';
+import type { ResolvedContact } from '../types';
 
-function DiamondBracket({ label, simulated }: { label: string; simulated?: boolean }) {
+function tagFor(c: ResolvedContact): string | null {
+  // Every contact's shot is simulated (no real audio anywhere in this demo);
+  // the tag communicates whether the LOCALISATION was actually computed by
+  // the real backend or is a client fallback — true for presets and manual
+  // clicks alike now that both run through the same pipeline.
+  if (c.shot.algorithmSource === 'backend') return 'SIMULATED SHOT — LIVE ALGORITHM FIX';
+  if (c.shot.algorithmSource === 'client-fallback') return 'SIMULATED — BACKEND OFFLINE, CLIENT ESTIMATE';
+  return null;
+}
+
+function DiamondBracket({ label, tag }: { label: string; tag: string | null }) {
   return (
     <div style={{ position: 'relative', width: 46, height: 46, pointerEvents: 'none' }}>
       <svg width="46" height="46" viewBox="0 0 46 46" style={{ position: 'absolute', inset: 0 }}>
@@ -46,14 +57,15 @@ function DiamondBracket({ label, simulated }: { label: string; simulated?: boole
         }}
       >
         {label}
-        {simulated && (
-          <div style={{ color: 'var(--uncertainty)', fontSize: 9 }}>SIMULATED — NOT ALGORITHM OUTPUT</div>
-        )}
+        {tag && <div style={{ color: 'var(--uncertainty)', fontSize: 9 }}>{tag}</div>}
       </div>
     </div>
   );
 }
 
+// Just the resolved fix — no second marker, no connecting line. The
+// true-vs-reported comparison belongs on Tab 3 (VerificationOverlay), where
+// there's a results table to explain it; here it only confused things.
 export default function HostilesLayer() {
   const contacts = useGdsStore((s) => s.contacts);
   const tab = useGdsStore((s) => s.tab);
@@ -64,7 +76,7 @@ export default function HostilesLayer() {
     <group>
       {contacts.map((c) => (
         <Html key={c.runId} position={[c.east, groundY(c.east, c.north) + 6, c.north]} center zIndexRange={[15, 0]}>
-          <DiamondBracket label={c.shot.id} simulated={c.source === 'manual'} />
+          <DiamondBracket label={c.shot.id} tag={tagFor(c)} />
         </Html>
       ))}
     </group>

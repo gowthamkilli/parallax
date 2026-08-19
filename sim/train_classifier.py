@@ -123,6 +123,57 @@ def gunshot(rng):
     return window
 
 
+def gunshot_crack(rng):
+    """The BALLISTIC CRACK -- a supersonic round's first arrival.
+
+    This class exists because of a genuine train/inference gap. The gunshot()
+    generator above models the MUZZLE BLAST, which is the only arrival a
+    subsonic round produces and the second arrival of a supersonic one. But the
+    edge pipeline windows around the FIRST onset, and for any supersonic shot
+    that first onset is the shockwave, not the blast -- an N-wave, which looks
+    nothing like a Friedlander pulse. A detector trained only on blasts scores
+    real supersonic gunshots at p ~ 0.28 and drops them.
+
+    So the GUNSHOT class covers both arrivals a real shot can present:
+    Friedlander muzzle blast (gunshot) and N-wave ballistic crack (here).
+
+    The N-wave duration is swept across the range Whitham's relation produces
+    for realistic miss distances and Mach numbers (roughly 150-600 us), and the
+    pulse is given the same range-dependent high-frequency rolloff and reverb
+    treatment the blast path gets.
+    """
+    from parallax.nwave import synth_nwave
+
+    n = int(DURATION_S * FS)
+    x = np.zeros(n)
+
+    T = rng.uniform(150e-6, 600e-6)
+    nwave = synth_nwave(FS, T)
+    # Propagation softens the ideal discontinuities, but only so far: the shock
+    # front is self-steepening, which is why a crack still sounds sharp at
+    # hundreds of metres. Keep the cutoff high enough that the N shape survives
+    # -- an over-smoothed crack is indistinguishable from a firecracker, and
+    # that would be a modelling artifact, not physics.
+    sos = signal.butter(2, rng.uniform(12000, 20000) / (FS / 2), btype="low", output="sos")
+    nwave = signal.sosfilt(sos, nwave)
+
+    offset = int(rng.uniform(0.05, 0.25) * DURATION_S * FS)
+    x[offset:offset + len(nwave)] += nwave[: max(0, n - offset)]
+
+    # At most one ground-bounce copy, well separated and well attenuated. The
+    # muzzle blast is NOT in this window -- it is hundreds of ms behind at any
+    # realistic range.
+    if rng.random() < 0.5:
+        start = offset + int(rng.uniform(0.006, 0.014) * FS)
+        if start < n:
+            tail = nwave[: n - start]
+            x[start:start + len(tail)] += rng.uniform(0.12, 0.3) * tail
+
+    # Light reverb only: heavy smearing destroys the bipolar signature that
+    # physically distinguishes a shockwave from a blast.
+    return _reverb(x, rng, rng.uniform(0.002, 0.010))
+
+
 def firecracker(rng):
     """The hard negative. Deliberately made HARD, not a strawman.
 
@@ -194,7 +245,10 @@ def personnel(rng):
 
 
 GENERATORS = {
-    ThreatClass.GUNSHOT: [gunshot],
+    # Both arrivals a real shot can present as the FIRST onset the edge
+    # pipeline windows on: muzzle blast (subsonic, or the 2nd arrival of a
+    # supersonic shot) and ballistic crack (1st arrival of a supersonic shot).
+    ThreatClass.GUNSHOT: [gunshot, gunshot_crack],
     ThreatClass.NUISANCE: [firecracker, door_slam],
     ThreatClass.VEHICLE: [vehicle],
     ThreatClass.DRONE: [drone],

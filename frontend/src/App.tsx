@@ -7,17 +7,33 @@ import Tab2Terminal from './hud/Tab2Terminal';
 import Tab3Verification from './hud/Tab3Verification';
 import DevPanel from './hud/DevPanel';
 import { useGdsStore } from './store';
+import { checkHealth } from './lib/backend';
+import { PRESET_TARGETS } from './data/presets';
 
 function App() {
   const tab = useGdsStore((s) => s.tab);
   const setTab = useGdsStore((s) => s.setTab);
-  const presets = useGdsStore((s) => s.presets);
-  const fireShot = useGdsStore((s) => s.fireShot);
+  const firePresetAtIndex = useGdsStore((s) => s.firePresetAtIndex);
   const selectedPresetIdx = useGdsStore((s) => s.selectedPresetIdx);
   const manualMode = useGdsStore((s) => s.manualMode);
   const setManualMode = useGdsStore((s) => s.setManualMode);
   const resetSession = useGdsStore((s) => s.resetSession);
   const toggleDevPanel = useGdsStore((s) => s.toggleDevPanel);
+  const setBackendOnline = useGdsStore((s) => s.setBackendOnline);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      const ok = await checkHealth();
+      if (!cancelled) setBackendOnline(ok);
+    };
+    poll();
+    const t = window.setInterval(poll, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [setBackendOnline]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -30,13 +46,12 @@ function App() {
       const num = Number(e.key);
       if (num >= 1 && num <= 9 && tab === 1) {
         const idx = num - 1;
-        if (presets[idx]) fireShot(presets[idx]);
+        if (PRESET_TARGETS[idx]) firePresetAtIndex(idx);
         return;
       }
       if (e.code === 'Space') {
         e.preventDefault();
-        const p = presets[selectedPresetIdx];
-        if (p) fireShot(p);
+        if (PRESET_TARGETS[selectedPresetIdx]) firePresetAtIndex(selectedPresetIdx);
         return;
       }
       if (e.key === 'r' || e.key === 'R') {
@@ -54,7 +69,7 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tab, presets, selectedPresetIdx, manualMode, setTab, fireShot, resetSession, setManualMode, toggleDevPanel]);
+  }, [tab, selectedPresetIdx, manualMode, setTab, firePresetAtIndex, resetSession, setManualMode, toggleDevPanel]);
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'var(--bg)', overflow: 'hidden' }}>

@@ -17,6 +17,7 @@ from parallax.doa import (
     planar_ring,
     ring_plus_mast,
     theoretical_bearing_floor_deg,
+    _fit_plane_wave,
 )
 
 
@@ -110,3 +111,82 @@ def test_aperture_and_geometry_properties():
     # Largest spacing across a 0.15 m ring is the ring diameter chord.
     assert 0.25 < ring.aperture_m < 0.31
     assert planar_ring(6, 0.15).aperture_m == pytest.approx(0.30, abs=0.01)
+
+
+# ------------------------------------------------------- outlier-pair rejection
+def test_fit_plane_wave_rejects_one_bad_pair():
+    """One badly corrupted pair (a reflection winning that one correlation)
+    must be dropped and refit, not allowed to drag the whole bearing."""
+    true_u = np.array([0.6, 0.8, 0.0])
+    rows = np.array([
+        [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0],
+        [1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [0.5, 0.5, 0.0],
+    ])
+    b_clean = rows @ true_u
+    b_bad = b_clean.copy()
+    b_bad[0] += 5.0  # one badly corrupted correlation peak
+
+    u_clean, _, rejected_clean, n_clean = _fit_plane_wave(rows, b_clean, planar=True)
+    u_bad, _, rejected_bad, n_bad = _fit_plane_wave(rows, b_bad, planar=True)
+
+    assert not rejected_clean
+    assert n_clean == len(rows)
+    assert rejected_bad
+    assert n_bad == len(rows) - 1
+    # After rejecting the bad pair, the recovered direction should land close
+    # to the clean-data solution rather than being dragged toward the outlier.
+    assert np.linalg.norm(u_bad - u_clean) < 0.05
+
+
+def test_outlier_rejection_has_no_false_triggers_on_clean_signal():
+    """The rejection mechanism must cost nothing when there is nothing to
+    reject -- verified across many independent noise draws, not one seed."""
+    geometry = ring_plus_mast()
+    errors = []
+    triggers = 0
+    for seed in range(40):
+        result = estimate_doa(_plane_wave(geometry, 55.0, snr_db=25, seed=seed), geometry, FS)
+        errors.append(abs((result.azimuth_deg - 55.0 + 180) % 360 - 180))
+        triggers += result.outlier_pair_rejected
+    assert np.mean(errors) < 0.5
+    assert triggers == 0, "outlier rejection fired on clean data -- false positive"
+
+
+def test_outlier_rejection_recovers_bearing_from_one_bad_correlation():
+    """The mechanism's actual target failure mode: GCC-PHAT picks the wrong
+    peak on ONE pair (a plausible partial-multipath outcome), the other 14
+    pairs stay good. This is a Monte Carlo over the geometry-level fit
+    (isolating the rejection logic from audio synthesis specifics), matching
+    what a full estimate_doa() call does internally.
+
+    Measured before writing this assertion: mean error over 30 trials was
+    11.8 deg (max 42.6 deg) without rejection, 0.9 deg (max 2.5 deg) with it.
+    NOTE: this is a genuinely different failure mode from a whole corrupted
+    channel (which touches 5 of 15 pairs at once) -- single-pair rejection
+    does not, and is not expected to, fix that broader case.
+    """
+    geometry = ring_plus_mast()
+    true_az = 55.0
+    u_true = np.array([math.sin(math.radians(true_az)), math.cos(math.radians(true_az)), 0.0])
+    n = geometry.n_mics
+    rows = [geometry.positions[i] - geometry.positions[j]
+            for i in range(n) for j in range(i + 1, n)]
+    a_mat = np.asarray(rows)
+    b_clean = a_mat @ u_true
+
+    rng = np.random.default_rng(0)
+    with_rej, without_rej = [], []
+    for _ in range(30):
+        b = b_clean + rng.normal(0, 0.01, size=len(b_clean))
+        bad_idx = rng.integers(0, len(b_clean))
+        b[bad_idx] += rng.choice([-1, 1]) * rng.uniform(0.3, 1.0)
+
+        u_no, *_ = _fit_plane_wave(a_mat, b, planar=True, reject_outlier=False)
+        u_yes, *_ = _fit_plane_wave(a_mat, b, planar=True, reject_outlier=True)
+        az_no = math.degrees(math.atan2(u_no[0], u_no[1])) % 360
+        az_yes = math.degrees(math.atan2(u_yes[0], u_yes[1])) % 360
+        without_rej.append(abs((az_no - true_az + 180) % 360 - 180))
+        with_rej.append(abs((az_yes - true_az + 180) % 360 - 180))
+
+    assert np.mean(with_rej) < np.mean(without_rej) / 3
+    assert np.mean(with_rej) < 3.0

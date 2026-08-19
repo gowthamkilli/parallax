@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { useGdsStore } from '../store';
 import RadarPlot from '../components/RadarPlot';
+import Compass from '../components/Compass';
 import Waveform from '../components/Waveform';
 import BandEnergy from '../components/BandEnergy';
 import EventLog from '../components/EventLog';
 
 function useCountUp(value: number, durationMs = 400): number {
   const [display, setDisplay] = useState(value);
-  const fromRef = useRef(value);
+  // Tracks wherever the animation currently IS, not just its start/end, so a
+  // second update arriving mid-flight resumes smoothly instead of jumping
+  // back to the value that was current when the first animation began.
+  const latestRef = useRef(value);
   useEffect(() => {
-    const from = fromRef.current;
+    latestRef.current = display;
+  });
+  useEffect(() => {
+    const from = latestRef.current;
     const start = performance.now();
     let raf: number;
     const tick = (t: number) => {
@@ -17,7 +24,6 @@ function useCountUp(value: number, durationMs = 400): number {
       const eased = 1 - (1 - p) * (1 - p);
       setDisplay(from + (value - from) * eased);
       if (p < 1) raf = requestAnimationFrame(tick);
-      else fromRef.current = value;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -142,12 +148,35 @@ export default function Tab2Terminal() {
             <span className="label" style={{ fontSize: 11, color: 'var(--hud-dim)' }}>CONTACT</span>
             <span className="label" style={{ fontSize: 13, color: 'var(--hostile)' }}>{shot?.id ?? '—'}</span>
           </div>
+          {shot?.algorithmSource && (
+            <div
+              className="label font-mono"
+              style={{
+                fontSize: 9,
+                marginBottom: 4,
+                color: shot.algorithmSource === 'backend' ? 'var(--friendly)' : 'var(--uncertainty)',
+              }}
+            >
+              {shot.algorithmSource === 'backend' ? 'LIVE ALGORITHM FIX' : 'BACKEND OFFLINE — CLIENT ESTIMATE'}
+            </div>
+          )}
           <div style={{ borderTop: '1px solid var(--hud-dim)', margin: '4px 0 10px' }} />
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 10 }}>
-            <div className="label" style={{ fontSize: 10, color: 'var(--hud-dim)' }}>DIRECTION</div>
-            <div style={{ fontSize: 46, fontWeight: 700, lineHeight: 1, letterSpacing: '0.02em' }}>{shot?.direction ?? '—'}</div>
+          {/* compass — the local reference for DIRECTION, so the bearing
+              never rests on the string alone */}
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ width: 84, height: 84, flexShrink: 0 }}>
+              <Compass azimuthDeg={shot?.azimuth_deg ?? null} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div className="label" style={{ fontSize: 10, color: 'var(--hud-dim)' }}>DIRECTION</div>
+              <div style={{ fontSize: 42, fontWeight: 700, lineHeight: 1, letterSpacing: '0.02em' }}>{shot?.direction ?? '—'}</div>
+              <div className="font-mono" style={{ fontSize: 11, color: 'var(--hud-dim)' }}>
+                {shot ? `${shot.azimuth_deg.toFixed(1)}° TRUE` : '—'}
+              </div>
+            </div>
           </div>
+
           <div style={{ display: 'flex', gap: 24, marginBottom: 10 }}>
             <div>
               <div className="label" style={{ fontSize: 10, color: 'var(--hud-dim)' }}>DISTANCE</div>

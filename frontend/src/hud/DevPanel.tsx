@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
 import { useGdsStore } from '../store';
 import { AO } from '../geo';
+import { PRESET_TARGETS } from '../data/presets';
 
 export default function DevPanel() {
   const devPanelOpen = useGdsStore((s) => s.devPanelOpen);
   const presets = useGdsStore((s) => s.presets);
   const loadPresets = useGdsStore((s) => s.loadPresets);
-  const fireShot = useGdsStore((s) => s.fireShot);
+  const firePresetAtIndex = useGdsStore((s) => s.firePresetAtIndex);
   const resetSession = useGdsStore((s) => s.resetSession);
   const audioEnabled = useGdsStore((s) => s.audioEnabled);
   const setAudioEnabled = useGdsStore((s) => s.setAudioEnabled);
@@ -39,8 +40,8 @@ export default function DevPanel() {
 
   const replaySequence = async () => {
     setReplaying(true);
-    for (const p of presets) {
-      fireShot(p, 'preset');
+    for (let i = 0; i < PRESET_TARGETS.length; i++) {
+      await firePresetAtIndex(i);
       await new Promise((r) => setTimeout(r, 3200));
     }
     setReplaying(false);
@@ -71,11 +72,11 @@ export default function DevPanel() {
         EXTENT {AO.extent_m} m
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <button onClick={() => fileRef.current?.click()} style={btnStyle}>LOAD PRESETS.JSON</button>
+        <button onClick={() => fileRef.current?.click()} style={btnStyle}>LOAD EXTERNAL FEED.JSON</button>
         <input ref={fileRef} type="file" accept="application/json" onChange={handleFile} style={{ display: 'none' }} />
-        <button onClick={handleExport} style={btnStyle}>EXPORT PRESETS.JSON</button>
+        <button onClick={handleExport} style={btnStyle}>EXPORT EXTERNAL FEED.JSON ({presets.length})</button>
         <button onClick={replaySequence} disabled={replaying} style={btnStyle}>
-          {replaying ? 'REPLAYING…' : 'REPLAY FULL SEQUENCE'}
+          {replaying ? 'REPLAYING…' : `REPLAY PRESET LIBRARY (${PRESET_TARGETS.length})`}
         </button>
         <button onClick={resetSession} style={btnStyle}>RESET SESSION [R]</button>
         <button onClick={() => setAudioEnabled(!audioEnabled)} style={btnStyle}>

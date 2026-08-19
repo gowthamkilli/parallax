@@ -3,6 +3,35 @@
 // is dropped into public/textures/terrain.jpg later, Terrain.tsx can be
 // pointed at it instead with no change to the rest of the scene.
 
+import * as THREE from 'three';
+
+/** The canonical ground surface. ONE builder, used by both the terrain mesh
+ *  and anything that needs to sit exactly on it (the manual-fire click
+ *  surface). Two meshes built from the same extent/height function but
+ *  DIFFERENT segment counts interpolate differently between vertices in
+ *  high-relief spots — they look like the same surface but aren't, so a
+ *  raycast against one lands at a different (x,z) than what's rendered by
+ *  the other. That was the actual cause of clicks landing in the wrong
+ *  place. Sharing this function makes that class of bug impossible: there
+ *  is only one surface definition to diverge from.
+ */
+export function buildGroundGeometry(extent: number, segments: number, heightOffset = 0): THREE.PlaneGeometry {
+  const geo = new THREE.PlaneGeometry(extent, extent, segments, segments);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const u = x / extent + 0.5;
+    const v = z / extent + 0.5;
+    pos.setY(i, heightAt(u, v) + heightOffset);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export const GROUND_SEGMENTS = 160;
+
 function hash(x: number, y: number, seed: number): number {
   let h = x * 374761393 + y * 668265263 + seed * 2147483647;
   h = (h ^ (h >>> 13)) * 1274126177;
