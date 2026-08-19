@@ -63,9 +63,14 @@ function DiamondBracket({ label, tag }: { label: string; tag: string | null }) {
   );
 }
 
-// Just the resolved fix — no second marker, no connecting line. The
-// true-vs-reported comparison belongs on Tab 3 (VerificationOverlay), where
-// there's a results table to explain it; here it only confused things.
+// The marker sits at the confirmed ground-truth point — where you actually
+// clicked, or the preset's authored location — not at the algorithm's
+// reported (possibly offset) fix. That's a deliberate choice: this is the
+// tactical map's "mark this as an enemy zone" pin, and it should never move
+// off the point you marked. The algorithm's real, sometimes-imperfect
+// numbers (direction/range/confidence) still drive Tab 2's readout and Tab
+// 3's verification comparison unchanged — only the map pin here is fixed to
+// truth, so the two never visually disagree on this tab.
 export default function HostilesLayer() {
   const contacts = useGdsStore((s) => s.contacts);
   const tab = useGdsStore((s) => s.tab);
@@ -75,7 +80,12 @@ export default function HostilesLayer() {
   return (
     <group>
       {contacts.map((c) => (
-        <Html key={c.runId} position={[c.east, groundY(c.east, c.north) + 6, c.north]} center zIndexRange={[15, 0]}>
+        <Html
+          key={c.runId}
+          position={[c.truthEast, groundY(c.truthEast, c.truthNorth) + 6, c.truthNorth]}
+          center
+          zIndexRange={[15, 0]}
+        >
           <DiamondBracket label={c.shot.id} tag={tagFor(c)} />
         </Html>
       ))}

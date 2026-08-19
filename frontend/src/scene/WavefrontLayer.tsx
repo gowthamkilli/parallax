@@ -93,7 +93,7 @@ export default function WavefrontLayer() {
 
     const now = performance.now();
     const sinceStart = now - activeShot.firedAtMs;
-    const targetY = groundY(activeShot.targetEast, activeShot.targetNorth);
+    const truthY = groundY(activeShot.truthEast, activeShot.truthNorth);
 
     // muzzle flash: quick bloom-and-fade instead of a static sphere
     if (flashRef.current) {
@@ -184,9 +184,9 @@ export default function WavefrontLayer() {
         const drawing = elapsed > 0;
 
         const nodeY = groundY(node.east, node.north) + 1;
-        const ex = node.east + (activeShot.targetEast - node.east) * progress;
-        const ey = nodeY + (targetY + 1 - nodeY) * progress;
-        const ez = node.north + (activeShot.targetNorth - node.north) * progress;
+        const ex = node.east + (activeShot.truthEast - node.east) * progress;
+        const ey = nodeY + (truthY + 1 - nodeY) * progress;
+        const ez = node.north + (activeShot.truthNorth - node.north) * progress;
 
         assets.pulseRef.visible = drawing && progress < 1;
         assets.pulseRef.position.set(ex, ey, ez);
@@ -231,7 +231,6 @@ export default function WavefrontLayer() {
   if (!shotSnapshot) return null;
   const { activeShot } = shotSnapshot;
 
-  const targetY = groundY(activeShot.targetEast, activeShot.targetNorth);
   const truthY = groundY(activeShot.truthEast, activeShot.truthNorth);
   const ellipseRadius = Math.max(2, 15 - (activeShot.shot.confidence_pct / 100) * 13);
 
@@ -308,10 +307,11 @@ export default function WavefrontLayer() {
         </mesh>
       ))}
 
-      {/* uncertainty ellipse bloom */}
+      {/* uncertainty ellipse bloom — at the same click point the marker
+          settles on, so the two never visually disagree */}
       <mesh
         ref={ellipseRef}
-        position={[activeShot.targetEast, targetY + 0.6, activeShot.targetNorth]}
+        position={[activeShot.truthEast, truthY + 0.6, activeShot.truthNorth]}
         rotation={[-Math.PI / 2, 0, 0]}
         visible={false}
       >

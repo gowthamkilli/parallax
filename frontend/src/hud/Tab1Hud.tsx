@@ -44,11 +44,21 @@ export default function Tab1Hud() {
   const backendOnline = useGdsStore((s) => s.backendOnline);
   const manualPending = useGdsStore((s) => s.manualPending);
   const [clock, setClock] = useState(new Date());
+  const [env, setEnv] = useState({ humidityPct: 58, tempC: 27 });
 
   useEffect(() => {
-    const t = window.setInterval(() => setClock(new Date()), 1000);
+    const start = performance.now();
+    const t = window.setInterval(() => {
+      setClock(new Date());
+      const elapsedMin = (performance.now() - start) / 60000;
+      setEnv({
+        humidityPct: 58 + Math.sin(elapsedMin * 0.4) * 9,
+        tempC: 27 + Math.sin(elapsedMin * 0.25 + 1.2) * 2.5,
+      });
+    }, 1000);
     return () => window.clearInterval(t);
   }, []);
+  const { humidityPct, tempC } = env;
 
   return (
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 20 }}>
@@ -70,6 +80,11 @@ export default function Tab1Hud() {
 
       {/* zoom indicator */}
       <div className="font-mono" style={{ position: 'absolute', top: 20, left: 130, fontSize: 13 }}>1X</div>
+
+      {/* environmental readout — front-end only, no backend tie */}
+      <div className="font-mono" style={{ position: 'absolute', top: 42, left: 20, fontSize: 11, color: 'var(--hud-dim)' }}>
+        HUMIDITY {humidityPct.toFixed(0)}% · TEMP {tempC.toFixed(0)}°C
+      </div>
 
       {/* center-top altitude readout */}
       <div className="label font-mono" style={{ position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)', fontSize: 13 }}>
