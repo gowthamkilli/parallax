@@ -1,0 +1,338 @@
+[
+  {
+    "id": "DET-001",
+    "label": "TREE LINE, EAST APPROACH",
+    "t_offset_ms": 0,
+    "direction": "N42.0E",
+    "azimuth_deg": 42,
+    "distance_m": 300.1,
+    "latitude": 28.622438709631204,
+    "longitude": 77.2076573081687,
+    "confidence_pct": 87.3,
+    "detecting_node": "VAJRA-2",
+    "contributing_nodes": [
+      "VAJRA-3",
+      "VAJRA-1",
+      "VAJRA-2"
+    ],
+    "tdoa_ms": [
+      0,
+      0.273,
+      0.401
+    ],
+    "snr_db": 18.4,
+    "weapon_class": "5.56x45 RIFLE",
+    "truth": {
+      "azimuth_deg": 41.1,
+      "distance_m": 302.4
+    }
+  },
+  {
+    "id": "DET-002",
+    "label": "RIDGE NORTH OF AO",
+    "t_offset_ms": 1800,
+    "direction": "N54.6W",
+    "azimuth_deg": 305.4,
+    "distance_m": 512.8,
+    "latitude": 28.624782280390047,
+    "longitude": 77.21340191640631,
+    "confidence_pct": 74.6,
+    "detecting_node": "GARUD-1",
+    "contributing_nodes": [
+      "GARUD-2",
+      "GARUD-3",
+      "GARUD-1"
+    ],
+    "tdoa_ms": [
+      0,
+      0.387,
+      0.568
+    ],
+    "snr_db": 13.1,
+    "weapon_class": "7.62x39 RIFLE",
+    "truth": {
+      "azimuth_deg": 306.9,
+      "distance_m": 498
+    }
+  },
+  {
+    "id": "DET-003",
+    "label": "OPEN GROUND, SOUTH FLANK",
+    "t_offset_ms": 3600,
+    "direction": "S11.8E",
+    "azimuth_deg": 168.2,
+    "distance_m": 244.5,
+    "latitude": 28.60832313204066,
+    "longitude": 77.21262695549203,
+    "confidence_pct": 91.8,
+    "detecting_node": "RUDRA-3",
+    "contributing_nodes": [
+      "RUDRA-1",
+      "RUDRA-3",
+      "RUDRA-2"
+    ],
+    "tdoa_ms": [
+      0,
+      0.243,
+      0.357
+    ],
+    "snr_db": 21.7,
+    "weapon_class": "5.56x45 RIFLE",
+    "truth": {
+      "azimuth_deg": 168.9,
+      "distance_m": 241
+    }
+  },
+  {
+    "id": "DET-004",
+    "label": "SCRUB BELT, WEST",
+    "t_offset_ms": 5400,
+    "direction": "S71.7W",
+    "azimuth_deg": 251.7,
+    "distance_m": 388.9,
+    "latitude": 28.619822830885962,
+    "longitude": 77.20173151917463,
+    "confidence_pct": 68.2,
+    "detecting_node": "VAJRA-1",
+    "contributing_nodes": [
+      "VAJRA-2",
+      "VAJRA-1",
+      "VAJRA-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.321,
+      0.471
+    ],
+    "snr_db": 10.9,
+    "weapon_class": "UNCLASSIFIED",
+    "truth": {
+      "azimuth_deg": 249,
+      "distance_m": 402.5
+    }
+  },
+  {
+    "id": "DET-005",
+    "label": "TRACK JUNCTION, NE",
+    "t_offset_ms": 7200,
+    "direction": "N61.3E",
+    "azimuth_deg": 61.3,
+    "distance_m": 176.4,
+    "latitude": 28.622683777392083,
+    "longitude": 77.21890906679441,
+    "confidence_pct": 95.1,
+    "detecting_node": "GARUD-3",
+    "contributing_nodes": [
+      "GARUD-1",
+      "GARUD-2",
+      "GARUD-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.207,
+      0.304
+    ],
+    "snr_db": 24.3,
+    "weapon_class": "5.56x45 RIFLE",
+    "truth": {
+      "azimuth_deg": 61,
+      "distance_m": 175.1
+    }
+  },
+  {
+    "id": "DET-006",
+    "label": "CANOPY EDGE, FAR NORTH",
+    "t_offset_ms": 9000,
+    "direction": "N10.4W",
+    "azimuth_deg": 349.6,
+    "distance_m": 623,
+    "latitude": 28.628127239621175,
+    "longitude": 77.21630190455208,
+    "confidence_pct": 58.9,
+    "detecting_node": "GARUD-2",
+    "contributing_nodes": [
+      "GARUD-2",
+      "GARUD-1",
+      "GARUD-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.446,
+      0.654
+    ],
+    "snr_db": 8.4,
+    "weapon_class": "UNCLASSIFIED",
+    "truth": {
+      "azimuth_deg": 344.2,
+      "distance_m": 640.7
+    }
+  },
+  {
+    "id": "DET-007",
+    "label": "CREEK BED, SE",
+    "t_offset_ms": 10800,
+    "direction": "S61.5E",
+    "azimuth_deg": 118.5,
+    "distance_m": 205.2,
+    "latitude": 28.60938575717382,
+    "longitude": 77.21385844171009,
+    "confidence_pct": 89,
+    "detecting_node": "RUDRA-1",
+    "contributing_nodes": [
+      "RUDRA-1",
+      "RUDRA-3",
+      "RUDRA-2"
+    ],
+    "tdoa_ms": [
+      0,
+      0.222,
+      0.326
+    ],
+    "snr_db": 19.6,
+    "weapon_class": "7.62x39 RIFLE",
+    "truth": {
+      "azimuth_deg": 119.4,
+      "distance_m": 201.8
+    }
+  },
+  {
+    "id": "DET-008",
+    "label": "STRUCTURE CLUSTER, W",
+    "t_offset_ms": 12600,
+    "direction": "N80.1W",
+    "azimuth_deg": 279.9,
+    "distance_m": 341.6,
+    "latitude": 28.621686015571196,
+    "longitude": 77.20275380380171,
+    "confidence_pct": 81.4,
+    "detecting_node": "VAJRA-3",
+    "contributing_nodes": [
+      "VAJRA-1",
+      "VAJRA-2",
+      "VAJRA-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.295,
+      0.433
+    ],
+    "snr_db": 15.2,
+    "weapon_class": "5.56x45 RIFLE",
+    "truth": {
+      "azimuth_deg": 280.6,
+      "distance_m": 336.9
+    }
+  },
+  {
+    "id": "DET-009",
+    "label": "TREE LINE, FAR EAST",
+    "t_offset_ms": 14400,
+    "direction": "N88.1E",
+    "azimuth_deg": 88.1,
+    "distance_m": 455.3,
+    "latitude": 28.6222494037061,
+    "longitude": 77.22233596909186,
+    "confidence_pct": 71,
+    "detecting_node": "GARUD-1",
+    "contributing_nodes": [
+      "GARUD-1",
+      "GARUD-2",
+      "GARUD-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.356,
+      0.523
+    ],
+    "snr_db": 12,
+    "weapon_class": "UNCLASSIFIED",
+    "truth": {
+      "azimuth_deg": 89.8,
+      "distance_m": 447.6
+    }
+  },
+  {
+    "id": "DET-010",
+    "label": "OPEN PLAIN, CENTRAL",
+    "t_offset_ms": 16200,
+    "direction": "N22.7E",
+    "azimuth_deg": 22.7,
+    "distance_m": 288,
+    "latitude": 28.613146307962463,
+    "longitude": 77.21319183369951,
+    "confidence_pct": 93.6,
+    "detecting_node": "RUDRA-2",
+    "contributing_nodes": [
+      "RUDRA-2",
+      "RUDRA-3",
+      "RUDRA-1"
+    ],
+    "tdoa_ms": [
+      0,
+      0.267,
+      0.391
+    ],
+    "snr_db": 22.9,
+    "weapon_class": "5.56x45 RIFLE",
+    "truth": {
+      "azimuth_deg": 22.3,
+      "distance_m": 289.9
+    }
+  },
+  {
+    "id": "DET-011",
+    "label": "RIDGE, SOUTH WEST",
+    "t_offset_ms": 18000,
+    "direction": "S22.4W",
+    "azimuth_deg": 202.4,
+    "distance_m": 367.1,
+    "latitude": 28.617386440397777,
+    "longitude": 77.20417089282049,
+    "confidence_pct": 64.7,
+    "detecting_node": "VAJRA-2",
+    "contributing_nodes": [
+      "VAJRA-2",
+      "VAJRA-1",
+      "VAJRA-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.309,
+      0.453
+    ],
+    "snr_db": 9.8,
+    "weapon_class": "7.62x39 RIFLE",
+    "truth": {
+      "azimuth_deg": 205.1,
+      "distance_m": 359
+    }
+  },
+  {
+    "id": "DET-012",
+    "label": "TRACK, NORTH APPROACH",
+    "t_offset_ms": 19800,
+    "direction": "N5.0W",
+    "azimuth_deg": 355,
+    "distance_m": 233.9,
+    "latitude": 28.624015959524087,
+    "longitude": 77.21711708984908,
+    "confidence_pct": 97.2,
+    "detecting_node": "GARUD-3",
+    "contributing_nodes": [
+      "GARUD-2",
+      "GARUD-1",
+      "GARUD-3"
+    ],
+    "tdoa_ms": [
+      0,
+      0.238,
+      0.349
+    ],
+    "snr_db": 26,
+    "weapon_class": "5.56x45 RIFLE",
+    "truth": {
+      "azimuth_deg": 355.3,
+      "distance_m": 232.5
+    }
+  }
+]

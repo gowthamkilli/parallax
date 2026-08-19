@@ -1,0 +1,86 @@
+@import 'tailwindcss';
+
+/* ── GDS token layer ──────────────────────────────────────────────── */
+:root {
+  --terrain-canopy: #2e3b22;
+  --terrain-scrub: #4a5433;
+  --terrain-open: #7c7654;
+  --terrain-track: #9c9276;
+  --terrain-water: #3a4a48;
+
+  --hud-line: #edf0e8;
+  --hud-dim: rgba(237, 240, 232, 0.38);
+  --panel: rgba(14, 19, 15, 0.86);
+
+  --friendly: #7fe3b0;
+  --hostile: #ff3b30;
+  --uncertainty: #ffb627;
+  --grid-blue: #4a7fb5;
+  --rec-red: #e02020;
+
+  --bg: #0a0d09;
+
+  /* No self-hosted faces bundled yet (no woff2 assets on hand — see
+     frontend/public/fonts/README.md). Fallback stacks below carry the
+     build until real Barlow Condensed / JetBrains Mono files are dropped
+     into public/fonts/, at which point add matching @font-face rules
+     here and nothing else in the app needs to change. */
+  --font-label: 'Oswald', 'Arial Narrow', sans-serif;
+  --font-mono: ui-monospace, 'Consolas', 'Cascadia Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--hud-line);
+  font-family: var(--font-label);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  border-radius: 0 !important;
+  border: none !important;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-label);
+}
+
+.hairline {
+  stroke: var(--hud-line);
+  stroke-width: 1;
+  fill: none;
+}
+
+::selection {
+  background: var(--hostile);
+  color: #fff;
+}
+
+/* thin scrollbar for event log / dev panel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--hud-dim);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
